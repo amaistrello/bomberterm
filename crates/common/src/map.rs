@@ -72,4 +72,11 @@ impl Map {
     pub fn is_walkable(&self, x: u16, y: u16) -> bool {
         matches!(self.get(x, y), Some(Tile::Empty))
     }
+
+    pub fn destroy(&mut self, x: u16, y: u16) {
+        // Only destructible tiles can be destroyed
+        if let Some(Tile::Destructible) = self.get(x, y) {
+            self.set(x, y, Tile::Empty);
+        }
+    }
 }

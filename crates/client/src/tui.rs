@@ -185,6 +185,6 @@ fn render_connecting(terminal: &mut Term) -> io::Result<()> {
 pub fn render_frame(terminal: &mut Term, state: Option<&crate::ClientState>) -> io::Result<()> {
     match state {
         None => render_connecting(terminal),
-        Some(s) => render(terminal, &s.map, &s.snapshot),
+        Some(s) => render(terminal, &s.snapshot.map, &s.snapshot),
     }
 }

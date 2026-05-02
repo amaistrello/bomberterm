@@ -17,7 +17,6 @@ type FramedStream = tokio_serde::Framed<tokio_util::codec::Framed<TcpStream, Len
 // Clone so watch::Sender can copy it to new receivers.
 #[derive(Clone)]
 pub struct ClientState {
-    pub map: Map,
     pub snapshot: GameSnapshot,
 }
 
@@ -77,11 +76,7 @@ async fn network_task(
             msg = framed.next() => {
                 match msg {
                     Some(Ok(ServerMsg::StateUpdate(snapshot))) => {
-                        // Push to watch channel — render loop will pick it up
-                        let _ = state_tx.send(Some(ClientState {
-                            map: map.clone(),
-                            snapshot,
-                        }));
+                        let _ = state_tx.send(Some(ClientState { snapshot }));
                     }
                     Some(Ok(ServerMsg::GameOver { winner })) => {
                         info!("Game over — winner: {:?}", winner);

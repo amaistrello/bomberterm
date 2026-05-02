@@ -57,6 +57,7 @@ impl SharedState {
             players: self.players.values().cloned().collect(),
             bombs: self.bombs.clone(),
             explosions: self.explosions.clone(),
+            map: self.map.clone(),  // ← add this
         }
     }
 }
@@ -109,47 +110,162 @@ async fn game_loop(
     snapshot_tx: broadcast::Sender<GameSnapshot>,
     mut input_rx: mpsc::Receiver<PlayerInput>,
 ) {
-    // tick() returns every 100ms — this is the heartbeat of the entire game
     let mut ticker = interval(Duration::from_millis(100));
 
     loop {
         ticker.tick().await;
 
-        // Use a block so the MutexGuard is dropped before we await anything.
-        // Holding a Mutex across an .await is a deadlock waiting to happen.
         let snapshot = {
             let mut s = state.lock().unwrap();
             s.tick += 1;
 
+            // ── 1. Process inputs ──────────────────────────────────────────
+
             while let Ok(input) = input_rx.try_recv() {
-                // Phase 1: compute desired new position (immutable borrow of players)
+                // Compute new position before mutably borrowing players
                 let new_pos = if let Some(player) = s.players.get(&input.player_id) {
                     if player.alive {
-                        if let Some(dir) = input.direction {
+                        input.direction.and_then(|dir| {
                             let (dx, dy) = dir.delta();
                             let nx = player.pos.0 as i16 + dx;
                             let ny = player.pos.1 as i16 + dy;
-                            if nx >= 0 && ny >= 0 {
-                                Some((nx as u16, ny as u16))
-                            } else { None }
-                        } else { None }
+                            if nx >= 0 && ny >= 0 { Some((nx as u16, ny as u16)) }
+                            else { None }
+                        })
                     } else { None }
                 } else { None };
-            
-                // Phase 2: validate + apply (immutable map borrow, then mutable player borrow)
+
+                // Apply movement if the destination is walkable and not occupied by a bomb
                 if let Some((nx, ny)) = new_pos {
-                    if s.map.is_walkable(nx, ny) {
+                    let bomb_there = s.bombs.iter().any(|b| b.pos == (nx, ny));
+                    if s.map.is_walkable(nx, ny) && !bomb_there {
                         if let Some(player) = s.players.get_mut(&input.player_id) {
                             player.pos = (nx, ny);
                         }
                     }
                 }
+
+                // Place a bomb if requested
+                if input.place_bomb {
+                    let can_place = s.players.get(&input.player_id).map_or(false, |p| {
+                        p.alive && p.bombs_placed < p.max_bombs
+                    });
+                    if can_place {
+                        let (pos, range) = {
+                            let p = s.players.get(&input.player_id).unwrap();
+                            (p.pos, p.bomb_range)
+                        };
+                        // Don't allow placing two bombs on the same tile
+                        let already = s.bombs.iter().any(|b| b.pos == pos);
+                        if !already {
+                            s.bombs.push(Bomb {
+                                owner: input.player_id,
+                                pos,
+                                timer: 30, // 30 ticks × 100ms = 3 seconds
+                                range,
+                            });
+                            if let Some(p) = s.players.get_mut(&input.player_id) {
+                                p.bombs_placed += 1;
+                            }
+                        }
+                    }
+                }
             }
 
-            s.snapshot()
-        }; // MutexGuard dropped here
+            // ── 2. Tick bombs, collect detonations ─────────────────────────
 
-        // send() only errors if there are zero receivers — safe to ignore
+            // Separate which bombs explode from which survive
+            // We do this in two passes to avoid mutating while iterating
+            let mut surviving = Vec::new();
+            let mut detonating = Vec::new();
+
+            for mut bomb in s.bombs.drain(..) {
+                bomb.timer = bomb.timer.saturating_sub(1);
+                if bomb.timer == 0 {
+                    detonating.push(bomb);
+                } else {
+                    surviving.push(bomb);
+                }
+            }
+            s.bombs = surviving;
+
+            // ── 3. Calculate explosion cells ───────────────────────────────
+
+            // We process detonations in a queue so chain reactions work:
+            // if an explosion hits another bomb, that bomb detonates too
+            let mut detonate_queue = detonating;
+
+            while let Some(bomb) = detonate_queue.pop() {
+                // Return the bomb's slot to the owner
+                if let Some(p) = s.players.get_mut(&bomb.owner) {
+                    p.bombs_placed = p.bombs_placed.saturating_sub(1);
+                }
+
+                let mut cells: Vec<(u16, u16)> = vec![bomb.pos];
+
+                // Cast rays in all 4 directions
+                let directions: &[(i16, i16)] = &[(0,-1),(0,1),(-1,0),(1,0)];
+
+                for &(dx, dy) in directions {
+                    for step in 1..=bomb.range as i16 {
+                        let nx = bomb.pos.0 as i16 + dx * step;
+                        let ny = bomb.pos.1 as i16 + dy * step;
+
+                        if nx < 0 || ny < 0 { break; }
+                        let (nx, ny) = (nx as u16, ny as u16);
+
+                        match s.map.get(nx, ny) {
+                            Some(common::map::Tile::Wall) => {
+                                // Hard wall stops the ray, cell not included
+                                break;
+                            }
+                            Some(common::map::Tile::Destructible) => {
+                                // Destroys the block but doesn't penetrate further
+                                cells.push((nx, ny));
+                                s.map.destroy(nx, ny);
+                                break;
+                            }
+                            Some(common::map::Tile::Empty) => {
+                                cells.push((nx, ny));
+
+                                // Chain reaction: if there's a bomb here, detonate it
+                                if let Some(idx) = s.bombs.iter().position(|b| b.pos == (nx, ny)) {
+                                    let chained = s.bombs.remove(idx);
+                                    detonate_queue.push(chained);
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                }
+
+                s.explosions.push(Explosion { cells, ttl: 5 }); // 5 ticks = 0.5 seconds
+            }
+
+            // ── 4. Kill players caught in explosions ───────────────────────
+
+            let explosion_cells: Vec<(u16, u16)> = s.explosions
+                .iter()
+                .flat_map(|e| e.cells.iter().copied())
+                .collect();
+
+            for player in s.players.values_mut() {
+                if player.alive && explosion_cells.contains(&player.pos) {
+                    player.alive = false;
+                    info!("Player {} {} was killed", player.id, player.name);
+                }
+            }
+
+            // ── 5. Tick explosion TTL ──────────────────────────────────────
+
+            for exp in s.explosions.iter_mut() {
+                exp.ttl = exp.ttl.saturating_sub(1);
+            }
+            s.explosions.retain(|e| e.ttl > 0);
+
+            s.snapshot()
+        };
+
         let _ = snapshot_tx.send(snapshot);
     }
 }

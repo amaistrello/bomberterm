@@ -42,4 +42,6 @@ pub struct GameSnapshot {
     pub players: Vec<Player>,
     pub bombs: Vec<Bomb>,
     pub explosions: Vec<Explosion>,
+    pub map: Map,
+    pub phase: GamePhase,
 }
