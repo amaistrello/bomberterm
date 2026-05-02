@@ -1,106 +1,54 @@
-use tokio::net::TcpStream;
-use tokio_util::codec::LengthDelimitedCodec;
-use tokio_serde::formats::Bincode;
-use futures::{SinkExt, StreamExt};
-use common::protocol::{ClientMsg, ServerMsg};
-use tracing::{info, error};
+use std::time::Duration;
+use crossterm::event::{self, Event, KeyCode};
+use common::map::Map;
+use common::protocol::GameSnapshot;
+use common::types::{Player, Bomb, Explosion};
 
-// Same framing setup as the server but types are FLIPPED:
-// the client reads ServerMsg and writes ClientMsg
-type FramedStream = tokio_serde::Framed<tokio_util::codec::Framed<TcpStream, LengthDelimitedCodec>, ServerMsg, ClientMsg, Bincode<ServerMsg, ClientMsg>>;
+mod tui;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // Build a hardcoded snapshot so we can test rendering
+    // without a server connection
+    let map = Map::generate(15, 13);
 
-    let addr = "127.0.0.1:7777";
+    let snapshot = GameSnapshot {
+        tick: 42,
+        players: vec![
+            Player::new(0, "Alice".to_string(), (1, 1)),
+            Player::new(1, "Bob".to_string(),   (13, 11)),
+        ],
+        bombs: vec![
+            Bomb { owner: 0, pos: (3, 3), timer: 3, range: 2 },
+        ],
+        explosions: vec![
+            Explosion { cells: vec![(6, 5), (7, 5), (8, 5), (7, 4), (7, 6)], ttl: 2 },
+        ],
+    };
 
-    info!("Connecting to {}", addr);
+    // Set up the terminal — if this fails we want to crash loudly
+    let mut terminal = tui::setup().expect("failed to setup terminal");
 
-    // Connect to the server
-    let stream = TcpStream::connect(addr)
-        .await
-        .expect("failed to connect — is the server running?");
+    // Main render loop
+    loop {
+        // Draw the current state
+        tui::render(&mut terminal, &map, &snapshot)
+            .expect("failed to render");
 
-    info!("Connected!");
-
-    let mut framed = make_framed(stream);
-
-    // Send Join — first thing the server expects
-    let join = ClientMsg::Join { name: "Alice".to_string() };
-
-    if let Err(e) = framed.send(join).await {
-        error!("Failed to send Join: {}", e);
-        return;
-    }
-
-    info!("Sent Join");
-
-    // Wait for the server's response
-    match framed.next().await {
-        Some(Ok(ServerMsg::Welcome { your_id, you_are_host, map })) => {
-            info!(
-                "Got Welcome! id={} host={} map={}x{}",
-                your_id, you_are_host, map.width, map.height
-            );
-            info!("Map tile at (1,1) is walkable: {}", map.is_walkable(1, 1));
-        }
-
-        Some(Ok(ServerMsg::Rejected { reason })) => {
-            error!("Server rejected us: {}", reason);
-            return;
-        }
-
-        Some(Ok(other)) => {
-            error!("Unexpected first message: {:?}", other);
-            return;
-        }
-
-        Some(Err(e)) => {
-            error!("Decode error: {}", e);
-            return;
-        }
-
-        None => {
-            error!("Server closed connection immediately");
-            return;
+        // Poll for keypresses without blocking
+        // Duration::ZERO means: check right now, don't wait
+        if event::poll(Duration::from_millis(50)).unwrap_or(false) {
+            if let Ok(Event::Key(key)) = event::read() {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Char('Q') => break,
+                    _ => {}
+                }
+            }
         }
     }
 
-    // Send a few test inputs so we can see them appear in the server logs
-    info!("Sending test inputs...");
+    // Always restore the terminal before exiting
+    tui::teardown(&mut terminal).expect("failed to teardown terminal");
 
-    use common::types::Direction;
-
-    let inputs = vec![
-        ClientMsg::Input { direction: Some(Direction::Right), place_bomb: false },
-        ClientMsg::Input { direction: Some(Direction::Down),  place_bomb: false },
-        ClientMsg::Input { direction: None,                   place_bomb: true  },
-        ClientMsg::Input { direction: Some(Direction::Left),  place_bomb: false },
-    ];
-
-    for input in inputs {
-        if let Err(e) = framed.send(input).await {
-            error!("Failed to send input: {}", e);
-            return;
-        }
-        // Small delay so the server logs are readable
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-    }
-
-    info!("Done. Disconnecting.");
-}
-
-fn make_framed(stream: TcpStream) -> FramedStream {
-    let length_delimited = tokio_util::codec::Framed::new(
-        stream,
-        LengthDelimitedCodec::new(),
-    );
-
-    // Note the flip vs the server: Bincode<ServerMsg, ClientMsg>
-    // read=ServerMsg, write=ClientMsg
-    tokio_serde::Framed::new(
-        length_delimited,
-        Bincode::<ServerMsg, ClientMsg>::default(),
-    )
+    println!("Bye!");
 }
