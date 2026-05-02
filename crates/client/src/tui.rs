@@ -2,7 +2,7 @@ use std::io::{self, Stdout};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -143,7 +143,6 @@ fn build_help_widget() -> Paragraph<'static> {
         Span::raw("Quit"),
     ]))
 }
-
 // The main render function — called every frame
 // `map` is separate from snapshot because it only changes on game start
 pub fn render(terminal: &mut Term, map: &Map, snapshot: &GameSnapshot) -> io::Result<()> {
@@ -168,4 +167,24 @@ pub fn render(terminal: &mut Term, map: &Map, snapshot: &GameSnapshot) -> io::Re
     })?;
 
     Ok(())
+}
+
+// Connecting screen shown while waiting for Welcome from the server
+fn render_connecting(terminal: &mut Term) -> io::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+        let msg = Paragraph::new("Connecting to server...")
+            .style(Style::default().fg(Color::Yellow))
+            .block(Block::default().borders(Borders::ALL).title(" BomberTerm "));
+        frame.render_widget(msg, area);
+    })?;
+    Ok(())
+}
+
+// Public entry point — called every frame by the render loop
+pub fn render_frame(terminal: &mut Term, state: Option<&crate::ClientState>) -> io::Result<()> {
+    match state {
+        None => render_connecting(terminal),
+        Some(s) => render(terminal, &s.map, &s.snapshot),
+    }
 }
