@@ -3,18 +3,19 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::codec::LengthDelimitedCodec;
 use tokio_serde::formats::Bincode;
 use futures::{SinkExt, StreamExt};
-use crossterm::event::{Event, EventStream, KeyCode};
-use common::map::Map;
+use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use common::protocol::{ClientMsg, ServerMsg, GameSnapshot};
 use common::types::Direction;
-use tracing::{info, error};
+use tracing::info;
+use tracing::error;
 
 mod tui;
+mod app;
+
+use app::{Screen, NameMode, MENU_ITEMS};
 
 type FramedStream = tokio_serde::Framed<tokio_util::codec::Framed<TcpStream, LengthDelimitedCodec>, ServerMsg, ClientMsg, Bincode<ServerMsg, ClientMsg>>;
 
-// The state shared between the network task and the render loop.
-// Clone so watch::Sender can copy it to new receivers.
 #[derive(Clone)]
 pub struct ClientState {
     pub snapshot: GameSnapshot,
@@ -22,125 +23,92 @@ pub struct ClientState {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    let file_appender = tracing_appender::rolling::never("/tmp", "bomberterm.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    tracing_subscriber::fmt().with_writer(non_blocking).init();
 
-    // watch: network task writes latest state, render loop reads it
-    // None = haven't received Welcome yet (still connecting)
-    let (state_tx, state_rx) = watch::channel::<Option<ClientState>>(None);
-
-    // mpsc: render loop writes inputs, network task reads + forwards them
-    let (input_tx, input_rx) = mpsc::channel::<ClientMsg>(16);
-
-    // Network task runs independently in the background
-    let net = tokio::spawn(network_task(state_tx, input_rx));
-
-    // Render loop runs on the main task — blocks until user presses Q
-    render_loop(state_rx, input_tx).await;
-
-    // Kill the network task cleanly when the render loop exits
-    net.abort();
-}
-
-async fn network_task(
-    state_tx: watch::Sender<Option<ClientState>>,
-    mut input_rx: mpsc::Receiver<ClientMsg>,
-) {
-    let stream = match TcpStream::connect("127.0.0.1:7777").await {
-        Ok(s) => { info!("Connected to server"); s }
-        Err(e) => { error!("Failed to connect: {}", e); return; }
-    };
-
-    let mut framed = make_framed(stream);
-
-    // Send our name — hardcoded for now, will come from the menu later
-    if let Err(e) = framed.send(ClientMsg::Join { name: "Alice".to_string() }).await {
-        error!("Failed to send Join: {}", e);
-        return;
-    }
-
-    // First response must be Welcome — gives us the map and our player ID
-    let map = match framed.next().await {
-        Some(Ok(ServerMsg::Welcome { map, your_id, you_are_host })) => {
-            info!("Welcome received: id={} host={}", your_id, you_are_host);
-            map
-        }
-        other => {
-            error!("Expected Welcome, got: {:?}", other);
-            return;
-        }
-    };
-
-    loop {
-        tokio::select! {
-            // Server sent something
-            msg = framed.next() => {
-                match msg {
-                    Some(Ok(ServerMsg::StateUpdate(snapshot))) => {
-                        let _ = state_tx.send(Some(ClientState { snapshot }));
-                    }
-                    Some(Ok(ServerMsg::GameOver { winner })) => {
-                        info!("Game over — winner: {:?}", winner);
-                        break;
-                    }
-                    Some(Err(e)) => { error!("Decode error: {}", e); break; }
-                    None => { info!("Server disconnected"); break; }
-                    _ => {}
-                }
-            }
-
-            // Render loop sent an input to forward
-            input = input_rx.recv() => {
-                match input {
-                    Some(msg) => {
-                        if let Err(e) = framed.send(msg).await {
-                            error!("Failed to send input: {}", e);
-                            break;
-                        }
-                    }
-                    None => break, // input channel closed = render loop exited
-                }
-            }
-        }
-    }
-}
-
-async fn render_loop(
-    mut state_rx: watch::Receiver<Option<ClientState>>,
-    input_tx: mpsc::Sender<ClientMsg>,
-) {
     let mut terminal = tui::setup().expect("failed to setup terminal");
-
-    // EventStream is the async version of crossterm's event polling
     let mut events = EventStream::new();
+    let mut screen = Screen::main_menu();
 
     loop {
-        // Render whatever state we currently have (may be None while connecting)
-        let state = state_rx.borrow().clone();
-        tui::render_frame(&mut terminal, state.as_ref())
-            .expect("render failed");
+        // ── Render current screen ──────────────────────────────────────────
+        match &screen {
+            Screen::MainMenu { cursor } => {
+                tui::render_main_menu(&mut terminal, *cursor).expect("render failed");
+            }
+            Screen::EnterName { input, mode } => {
+                let hosting = matches!(mode, NameMode::Host);
+                tui::render_enter_name(&mut terminal, input, hosting).expect("render failed");
+            }
+            Screen::Connecting => {
+                tui::render_frame(&mut terminal, None).expect("render failed");
+            }
+            Screen::InGame => {}
+        }
 
-        tokio::select! {
-            // Keyboard event arrived
-            maybe_event = events.next() => {
-                if let Some(Ok(Event::Key(key))) = maybe_event {
+        // ── Handle input ───────────────────────────────────────────────────
+        if let Some(Ok(Event::Key(key))) = events.next().await {
+            match &mut screen {
+                Screen::MainMenu { cursor } => {
                     match key.code {
-                        KeyCode::Char('q') | KeyCode::Char('Q') => break,
-
-                        KeyCode::Up    | KeyCode::Char('w') => send_input(&input_tx, Some(Direction::Up),    false).await,
-                        KeyCode::Down  | KeyCode::Char('s') => send_input(&input_tx, Some(Direction::Down),  false).await,
-                        KeyCode::Left  | KeyCode::Char('a') => send_input(&input_tx, Some(Direction::Left),  false).await,
-                        KeyCode::Right | KeyCode::Char('d') => send_input(&input_tx, Some(Direction::Right), false).await,
-                        KeyCode::Char(' ') => send_input(&input_tx, None, true).await,
+                        KeyCode::Up => {
+                            if *cursor > 0 { *cursor -= 1; }
+                        }
+                        KeyCode::Down => {
+                            if *cursor < MENU_ITEMS.len() - 1 { *cursor += 1; }
+                        }
+                        KeyCode::Enter => {
+                            match *cursor {
+                                0 => screen = Screen::EnterName {
+                                    input: String::new(),
+                                    mode: NameMode::Host,
+                                },
+                                1 => screen = Screen::EnterName {
+                                    input: String::new(),
+                                    mode: NameMode::Join {
+                                        addr: "127.0.0.1:7777".to_string(),
+                                    },
+                                },
+                                2 => break,
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Char('q') => break,
                         _ => {}
                     }
                 }
+
+                Screen::EnterName { input, mode } => {
+                    match key.code {
+                        KeyCode::Esc => {
+                            screen = Screen::main_menu();
+                        }
+                        KeyCode::Enter if !input.is_empty() => {
+                            let name = input.clone();
+                            let mode = mode.clone();
+
+                            run_game_session(
+                                &mut terminal,
+                                &mut events,
+                                name,
+                                mode,
+                            ).await;
+
+                            screen = Screen::main_menu();
+                        }
+                        KeyCode::Backspace => { input.pop(); }
+                        KeyCode::Char(c) if input.len() < 16 => {
+                            if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                                input.push(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                Screen::Connecting | Screen::InGame => {}
             }
-
-            // Server sent a new snapshot — loop immediately to re-render
-            _ = state_rx.changed() => {}
-
-            // Redraw every 50ms even if nothing happened (keeps the screen fresh)
-            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
         }
     }
 
@@ -148,7 +116,95 @@ async fn render_loop(
     println!("Bye!");
 }
 
-// Small helper to keep the match arms above readable
+async fn run_game_session(
+    terminal: &mut tui::Term,
+    events: &mut EventStream,
+    name: String,
+    mode: NameMode,
+) {
+    if matches!(mode, NameMode::Host) {
+        info!("Starting embedded server...");
+        tokio::spawn(server::run(server::ServerConfig::default()));
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    }
+
+    let addr = match &mode {
+        NameMode::Host => "127.0.0.1:7777".to_string(),
+        NameMode::Join { addr } => addr.clone(),
+    };
+
+    let stream = match TcpStream::connect(&addr).await {
+        Ok(s) => s,
+        Err(e) => { error!("Failed to connect to {}: {}", addr, e); return; }
+    };
+
+    let mut framed = make_framed(stream);
+
+    if let Err(e) = framed.send(ClientMsg::Join { name }).await {
+        error!("Failed to send Join: {}", e);
+        return;
+    }
+
+    let _map = match framed.next().await {
+        Some(Ok(ServerMsg::Welcome { map, your_id, you_are_host })) => {
+            info!("Welcome! id={} host={}", your_id, you_are_host);
+            map
+        }
+        other => { error!("Expected Welcome, got {:?}", other); return; }
+    };
+
+    let (state_tx, mut state_rx) = watch::channel::<Option<ClientState>>(None);
+    let (input_tx, mut input_rx) = mpsc::channel::<ClientMsg>(16);
+
+    let net = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                msg = framed.next() => {
+                    match msg {
+                        Some(Ok(ServerMsg::StateUpdate(snapshot))) => {
+                            let _ = state_tx.send(Some(ClientState { snapshot }));
+                        }
+                        Some(Err(e)) => { error!("Decode error: {}", e); break; }
+                        None => { info!("Server disconnected"); break; }
+                        _ => {}
+                    }
+                }
+                input = input_rx.recv() => {
+                    match input {
+                        Some(msg) => { if framed.send(msg).await.is_err() { break; } }
+                        None => break,
+                    }
+                }
+            }
+        }
+    });
+
+    loop {
+        let state = state_rx.borrow().clone();
+        tui::render_frame(terminal, state.as_ref()).expect("render failed");
+
+        tokio::select! {
+            maybe_event = events.next() => {
+                if let Some(Ok(Event::Key(key))) = maybe_event {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Char('Q') => break,
+                        KeyCode::Up    | KeyCode::Char('w') => send_input(&input_tx, Some(Direction::Up),    false).await,
+                        KeyCode::Down  | KeyCode::Char('s') => send_input(&input_tx, Some(Direction::Down),  false).await,
+                        KeyCode::Left  | KeyCode::Char('a') => send_input(&input_tx, Some(Direction::Left),  false).await,
+                        KeyCode::Right | KeyCode::Char('d') => send_input(&input_tx, Some(Direction::Right), false).await,
+                        KeyCode::Char(' ')                   => send_input(&input_tx, None, true).await,
+                        _ => {}
+                    }
+                }
+            }
+            _ = state_rx.changed() => {}
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+    }
+
+    net.abort();
+}
+
 async fn send_input(tx: &mpsc::Sender<ClientMsg>, direction: Option<Direction>, place_bomb: bool) {
     let _ = tx.send(ClientMsg::Input { direction, place_bomb }).await;
 }

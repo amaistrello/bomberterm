@@ -250,3 +250,110 @@ fn render_game_over(terminal: &mut Term, winner: &Option<PlayerId>, players: &[c
     })?;
     Ok(())
 }
+
+pub fn render_main_menu(terminal: &mut Term, cursor: usize) -> io::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(30),
+                Constraint::Min(10),
+                Constraint::Percentage(30),
+            ])
+            .split(area);
+
+        let inner = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(35),
+                Constraint::Length(30),
+                Constraint::Percentage(35),
+            ])
+            .split(outer[1]);
+
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "  BOMBERTERM  ",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+        ];
+
+        let items = &["Host a game", "Join a game", "Quit"];
+        for (i, item) in items.iter().enumerate() {
+            if i == cursor {
+                lines.push(Line::from(Span::styled(
+                    format!(" ▶  {}", item),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", item),
+                    Style::default().fg(Color::Gray),
+                )));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " ↑↓ navigate   Enter select",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title(" BomberTerm ")),
+            inner[1],
+        );
+    })?;
+    Ok(())
+}
+
+pub fn render_enter_name(terminal: &mut Term, input: &str, hosting: bool) -> io::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(35),
+                Constraint::Length(8),
+                Constraint::Percentage(35),
+            ])
+            .split(area);
+
+        let inner = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(30),
+                Constraint::Min(30),
+                Constraint::Percentage(30),
+            ])
+            .split(outer[1]);
+
+        let title = if hosting { " Host a game " } else { " Join a game " };
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled("Your name:", Style::default().fg(Color::Gray))),
+            Line::from(Span::styled(
+                format!(" {}▌", input),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Enter confirm   Esc back",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title(title)),
+            inner[1],
+        );
+    })?;
+    Ok(())
+}
