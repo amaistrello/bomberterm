@@ -64,7 +64,11 @@ fn tile_span(map: &Map, x: u16, y: u16, snapshot: &GameSnapshot) -> Vec<Span<'st
                 0 => Color::Cyan,
                 1 => Color::Magenta,
                 2 => Color::Yellow,
-                _ => Color::Green,
+                3 => Color::Green,
+                4 => Color::Red,
+                5 => Color::Blue,
+                6 => Color::LightCyan,
+                _ => Color::LightMagenta,
             }
         };
         // Show first 2 chars of name so it fits in the 2-wide tile
@@ -130,7 +134,11 @@ fn build_sidebar_widget(snapshot: &GameSnapshot) -> Paragraph<'static> {
             0 => Color::Cyan,
             1 => Color::Magenta,
             2 => Color::Yellow,
-            _ => Color::Green,
+            3 => Color::Green,
+            4 => Color::Red,
+            5 => Color::Blue,
+            6 => Color::LightCyan,
+            _ => Color::LightMagenta,
         };
 
         let status = if player.alive { "♥" } else { "✝" };
@@ -177,7 +185,7 @@ pub fn render(terminal: &mut Term, map: &Map, snapshot: &GameSnapshot) -> io::Re
         // Split the main area into: map (left) and sidebar (right, 20 cols)
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(22)])
+            .constraints([Constraint::Min(0), Constraint::Length(26)])
             .split(vertical[0]);
 
         frame.render_widget(build_map_widget(map, snapshot), horizontal[0]);
@@ -243,7 +251,11 @@ pub fn render_lobby(terminal: &mut Term, players: &[common::types::Player], read
                 0 => Color::Cyan,
                 1 => Color::Magenta,
                 2 => Color::Yellow,
-                _ => Color::Green,
+                3 => Color::Green,
+                4 => Color::Red,
+                5 => Color::Blue,
+                6 => Color::LightCyan,
+                _ => Color::LightMagenta,
             };
 
             let ready_icon = if is_ready { "✔ " } else { "… " };
@@ -306,7 +318,6 @@ pub fn render_frame(terminal: &mut Term, state: Option<&crate::ClientState>) -> 
                     )?;
                 }
                 common::protocol::GamePhase::GameOver { ref winner } => {
-                    render(terminal, &s.snapshot.map, &s.snapshot)?;
                     render_game_over(terminal, winner, &s.snapshot.players)?;
                 }
                 common::protocol::GamePhase::Running => {

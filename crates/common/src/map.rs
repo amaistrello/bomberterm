@@ -20,40 +20,42 @@ impl Map {
     // hard walls on every even (x, y), destructible blocks randomly placed
     pub fn generate(width: u16, height: u16) -> Self {
         let mut tiles = vec![vec![Tile::Empty; width as usize]; height as usize];
-
-        for y in 0..height as usize {
-            for x in 0..width as usize {
-                if x == 0 || y == 0 || x == width as usize - 1 || y == height as usize - 1 {
-                    // Border is always a hard wall
+        let w = width as usize;
+        let h = height as usize;
+    
+        for y in 0..h {
+            for x in 0..w {
+                if x == 0 || y == 0 || x == w - 1 || y == h - 1 {
                     tiles[y][x] = Tile::Wall;
                 } else if x % 2 == 0 && y % 2 == 0 {
-                    // Interior pillars on even coords — classic Bomberman pattern
                     tiles[y][x] = Tile::Wall;
                 }
             }
         }
-
-        // Seed destructible blocks, but leave spawn corners clear
-        // Spawn positions are the 4 corners (just inside the border)
-        let spawns: &[(usize, usize)] = &[(1, 1), (1, 2), (2, 1),
-            (width as usize - 2, 1), (width as usize - 3, 1), (width as usize - 2, 2),
-            (1, height as usize - 2), (1, height as usize - 3), (2, height as usize - 2),
-            (width as usize - 2, height as usize - 2),
-            (width as usize - 3, height as usize - 2),
-            (width as usize - 2, height as usize - 3),
+    
+        // Protect 2-tile corridors around all 8 spawn positions
+        let spawns: Vec<(usize, usize)> = vec![
+            (1, 1), (2, 1), (1, 2),
+            (w-2, h-2), (w-3, h-2), (w-2, h-3),
+            (1, h-2), (2, h-2), (1, h-3),
+            (w-2, 1), (w-3, 1), (w-2, 2),
+            // middle spawns
+            (1, h/2), (2, h/2),
+            (w-2, h/2), (w-3, h/2),
+            (w/2, 1), (w/2, 2),
+            (w/2, h-2), (w/2, h-3),
         ];
-
-        for y in 0..height as usize {
-            for x in 0..width as usize {
+    
+        for y in 0..h {
+            for x in 0..w {
                 if tiles[y][x] == Tile::Empty && !spawns.contains(&(x, y)) {
-                    // ~40% chance of a destructible block on empty tiles
                     if (x * 7 + y * 13) % 10 < 4 {
                         tiles[y][x] = Tile::Destructible;
                     }
                 }
             }
         }
-
+    
         Self { width, height, tiles }
     }
 

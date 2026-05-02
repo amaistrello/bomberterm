@@ -21,30 +21,41 @@ type FramedStream = tokio_serde::Framed<tokio_util::codec::Framed<TcpStream, Len
 pub struct ServerConfig {
     pub port: u16,
     pub max_players: u8,
+    pub map_width: u16,
+    pub map_height: u16,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { port: 7777, max_players: 4 }
+        Self {
+            port: 7777,
+            max_players: 8,
+            map_width: 25,
+            map_height: 21,
+        }
     }
 }
 
 struct SharedState {
     next_player_id: PlayerId,
     map: Map,
+    map_width: u16,   // ← add
+    map_height: u16,  // ← add
     players: HashMap<PlayerId, Player>,
     bombs: Vec<Bomb>,
     explosions: Vec<Explosion>,
     tick: u64,
     phase: GamePhase,
-    ready_players: Vec<PlayerId>
+    ready_players: Vec<PlayerId>,
 }
 
 impl SharedState {
-    fn new() -> Self {
+    fn new(map_width: u16, map_height: u16) -> Self {
         Self {
             next_player_id: 0,
-            map: Map::generate(15, 13),
+            map: Map::generate(map_width, map_height),
+            map_width,
+            map_height,
             players: HashMap::new(),
             bombs: Vec::new(),
             explosions: Vec::new(),
@@ -89,23 +100,27 @@ impl SharedState {
         if self.phase != GamePhase::Lobby { return; }
         if self.players.len() < 2 { return; }
     
-        // Game starts only when every connected player is ready
         let all_ready = self.players.keys()
             .all(|id| self.ready_players.contains(id));
     
         if all_ready {
             self.phase = GamePhase::Running;
-            info!("All players ready — game starting!");
+            info!("All {} players ready — game starting!", self.players.len());
         }
     }
 }
 
+
 fn spawn_pos(id: PlayerId) -> (u16, u16) {
-    match id % 4 {
+    match id % 8 {
         0 => (1,  1),
-        1 => (13, 11),
-        2 => (1,  11),
-        _ => (13, 1),
+        1 => (23, 19),
+        2 => (1,  19),
+        3 => (23, 1),
+        4 => (1,  10),  // middle left
+        5 => (23, 10),  // middle right
+        6 => (12, 1),   // top middle
+        _ => (12, 19),  // bottom middle
     }
 }
 
@@ -121,7 +136,7 @@ pub async fn run(config: ServerConfig) {
     let listener = TcpListener::bind(&addr).await.expect("failed to bind");
     info!("Server listening on {}", addr);
 
-    let state = Arc::new(Mutex::new(SharedState::new()));
+    let state = Arc::new(Mutex::new(SharedState::new(config.map_width, config.map_height)));
     let (snapshot_tx, _) = broadcast::channel::<GameSnapshot>(16);
     let (input_tx, input_rx) = mpsc::channel::<PlayerInput>(64);
 
@@ -266,7 +281,7 @@ async fn game_loop(
             if let GamePhase::GameOver { .. } = s.phase {
                 if s.tick % 50 == 0 && s.tick > 0 {
                     info!("Resetting for rematch");
-                    s.map = Map::generate(15, 13);
+                    s.map = Map::generate(s.map_width, s.map_height);
                     s.bombs.clear();
                     s.explosions.clear();
                     s.tick = 0;
