@@ -37,6 +37,7 @@ struct SharedState {
     explosions: Vec<Explosion>,
     tick: u64,
     phase: GamePhase,
+    ready_players: Vec<PlayerId>
 }
 
 impl SharedState {
@@ -49,6 +50,7 @@ impl SharedState {
             explosions: Vec::new(),
             tick: 0,
             phase: GamePhase::Lobby,
+            ready_players: Vec::new(),
         }
     }
 
@@ -57,11 +59,6 @@ impl SharedState {
         self.next_player_id += 1;
         let spawn = spawn_pos(id);
         self.players.insert(id, Player::new(id, name, spawn));
-        // Game starts with 2+ players
-        if self.players.len() >= 2 && self.phase == GamePhase::Lobby {
-            self.phase = GamePhase::Running;
-            info!("Game started with {} players!", self.players.len());
-        }
         id
     }
 
@@ -73,6 +70,7 @@ impl SharedState {
             explosions: self.explosions.clone(),
             map: self.map.clone(),
             phase: self.phase.clone(),
+            ready_players: self.ready_players.clone()
         }
     }
 
@@ -84,6 +82,20 @@ impl SharedState {
             1 => { self.phase = GamePhase::GameOver { winner: Some(alive[0]) }; }
             0 => { self.phase = GamePhase::GameOver { winner: None }; }
             _ => {}
+        }
+    }
+    
+    fn try_start(&mut self) {
+        if self.phase != GamePhase::Lobby { return; }
+        if self.players.len() < 2 { return; }
+    
+        // Game starts only when every connected player is ready
+        let all_ready = self.players.keys()
+            .all(|id| self.ready_players.contains(id));
+    
+        if all_ready {
+            self.phase = GamePhase::Running;
+            info!("All players ready — game starting!");
         }
     }
 }
@@ -258,6 +270,7 @@ async fn game_loop(
                     s.bombs.clear();
                     s.explosions.clear();
                     s.tick = 0;
+                    s.ready_players.clear();
                     let ids: Vec<PlayerId> = s.players.keys().copied().collect();
                     for (i, id) in ids.iter().enumerate() {
                         if let Some(p) = s.players.get_mut(id) {
@@ -266,7 +279,7 @@ async fn game_loop(
                             p.bombs_placed = 0;
                         }
                     }
-                    s.phase = GamePhase::Running;
+                    s.phase = GamePhase::Lobby;
                 }
             }
 
@@ -324,6 +337,14 @@ async fn handle_connection(
                 match msg {
                     Some(Ok(ClientMsg::Input { direction, place_bomb })) => {
                         let _ = input_tx.send(PlayerInput { player_id, direction, place_bomb }).await;
+                    }
+                    Some(Ok(ClientMsg::Ready)) => {
+                        let mut s = state.lock().unwrap();
+                        if !s.ready_players.contains(&player_id) {
+                            s.ready_players.push(player_id);
+                            info!("Player {} is ready ({}/{})", player_id, s.ready_players.len(), s.players.len());
+                        }
+                        s.try_start();
                     }
                     Some(Err(e)) => { error!("Decode error: {}", e); break; }
                     None => { info!("{} disconnected", addr); break; }

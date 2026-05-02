@@ -200,7 +200,7 @@ fn render_connecting(terminal: &mut Term) -> io::Result<()> {
     Ok(())
 }
 
-pub fn render_lobby(terminal: &mut Term, players: &[String]) -> io::Result<()> {
+pub fn render_lobby(terminal: &mut Term, players: &[common::types::Player], ready_players: &[common::types::PlayerId], your_id: common::types::PlayerId) -> io::Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
 
@@ -233,31 +233,49 @@ pub fn render_lobby(terminal: &mut Term, players: &[String]) -> io::Result<()> {
                 Style::default().fg(Color::DarkGray),
             )),
             Line::from(""),
-            Line::from(Span::styled(
-                "Connected:",
-                Style::default().fg(Color::Gray),
-            )),
-            Line::from(""),
         ];
 
-        for (i, name) in players.iter().enumerate() {
-            let color = match i {
+        for player in players.iter() {
+            let is_ready = ready_players.contains(&player.id);
+            let is_you = player.id == your_id;
+
+            let color = match player.id {
                 0 => Color::Cyan,
                 1 => Color::Magenta,
                 2 => Color::Yellow,
                 _ => Color::Green,
             };
-            lines.push(Line::from(Span::styled(
-                format!("  ▶  {}", name),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            )));
+
+            let ready_icon = if is_ready { "✔ " } else { "… " };
+            let you_tag = if is_you { " (you)" } else { "" };
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {} ", ready_icon),
+                    Style::default().fg(if is_ready { Color::Green } else { Color::DarkGray }),
+                ),
+                Span::styled(
+                    format!("{}{}", player.name, you_tag),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+            ]));
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("  {}/2 players minimum to start", players.len()),
-            Style::default().fg(Color::DarkGray),
-        )));
+
+        let you_ready = ready_players.contains(&your_id);
+        if you_ready {
+            lines.push(Line::from(Span::styled(
+                "  Waiting for others...",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  Press R to ready up!",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
+        }
+
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  Q quit",
@@ -280,11 +298,12 @@ pub fn render_frame(terminal: &mut Term, state: Option<&crate::ClientState>) -> 
         Some(s) => {
             match &s.snapshot.phase {
                 common::protocol::GamePhase::Lobby => {
-                    let names: Vec<String> = s.snapshot.players
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect();
-                    render_lobby(terminal, &names)?;
+                    render_lobby(
+                        terminal,
+                        &s.snapshot.players,
+                        &s.snapshot.ready_players,
+                        s.your_id,
+                    )?;
                 }
                 common::protocol::GamePhase::GameOver { ref winner } => {
                     render(terminal, &s.snapshot.map, &s.snapshot)?;

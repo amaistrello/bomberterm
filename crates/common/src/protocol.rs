@@ -5,14 +5,12 @@ use crate::map::Map;
 // Messages the CLIENT sends to the server
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ClientMsg {
-    // Sent once, right after connecting
     Join { name: String },
-    // Sent every time the player does something
-    // Option<Direction> because the player might place a bomb without moving
     Input {
         direction: Option<Direction>,
         place_bomb: bool,
     },
+    Ready
 }
 
 // Messages the SERVER sends to clients
@@ -51,6 +49,7 @@ pub struct GameSnapshot {
     pub explosions: Vec<Explosion>,
     pub map: Map,
     pub phase: GamePhase,
+    pub ready_players: Vec<PlayerId>
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

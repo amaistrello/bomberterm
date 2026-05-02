@@ -6,7 +6,7 @@ use tokio_serde::formats::Bincode;
 use futures::{SinkExt, StreamExt};
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use common::protocol::{ClientMsg, ServerMsg, GameSnapshot, Beacon};
-use common::types::Direction;
+use common::types::{Direction, PlayerId};
 use tracing::{info, error};
 
 mod tui;
@@ -19,6 +19,7 @@ type FramedStream = tokio_serde::Framed<tokio_util::codec::Framed<TcpStream, Len
 #[derive(Clone)]
 pub struct ClientState {
     pub snapshot: GameSnapshot,
+    pub your_id: PlayerId, // ← add this
 }
 
 #[tokio::main]
@@ -260,10 +261,10 @@ async fn run_game_session(
         return;
     }
 
-    let _map = match framed.next().await {
+    let (your_id, _map) = match framed.next().await {
         Some(Ok(ServerMsg::Welcome { map, your_id, you_are_host })) => {
             info!("Welcome! id={} host={}", your_id, you_are_host);
-            map
+            (your_id, map)
         }
         other => { error!("Expected Welcome, got {:?}", other); return; }
     };
@@ -277,7 +278,7 @@ async fn run_game_session(
                 msg = framed.next() => {
                     match msg {
                         Some(Ok(ServerMsg::StateUpdate(snapshot))) => {
-                            let _ = state_tx.send(Some(ClientState { snapshot }));
+                            let _ = state_tx.send(Some(ClientState { snapshot, your_id }));
                         }
                         Some(Err(e)) => { error!("Decode error: {}", e); break; }
                         None => { info!("Server disconnected"); break; }
@@ -303,6 +304,9 @@ async fn run_game_session(
                 if let Some(Ok(Event::Key(key))) = maybe_event {
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Char('Q') => break,
+                        KeyCode::Char('r') | KeyCode::Char('R') => {
+                            let _ = input_tx.send(ClientMsg::Ready).await;
+                        }
                         KeyCode::Up    | KeyCode::Char('w') => send_input(&input_tx, Some(Direction::Up),    false).await,
                         KeyCode::Down  | KeyCode::Char('s') => send_input(&input_tx, Some(Direction::Down),  false).await,
                         KeyCode::Left  | KeyCode::Char('a') => send_input(&input_tx, Some(Direction::Left),  false).await,
