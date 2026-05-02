@@ -83,6 +83,18 @@ fn tile_span(map: &Map, x: u16, y: u16, snapshot: &GameSnapshot) -> Vec<Span<'st
         return vec![Span::styled("✸ ".to_string(), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))];
     }
 
+    // Check for a powerup at this position
+    let powerup_here = snapshot.powerups.iter().find(|p| p.pos == (x, y));
+    
+    if let Some(powerup) = powerup_here {
+        let (symbol, color) = match powerup.kind {
+            common::types::PowerupKind::ExtraBomb  => ("✚ ", Color::LightCyan),
+            common::types::PowerupKind::LongerRange => ("◈ ", Color::LightMagenta),
+            common::types::PowerupKind::Speed       => ("» ", Color::LightGreen),
+        };
+        return vec![Span::styled(symbol.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD))];
+    }
+
     // Find the bomb at this position if any
     let bomb_here = snapshot.bombs.iter().find(|b| b.pos == (x, y));
     
@@ -144,7 +156,12 @@ fn build_sidebar_widget(snapshot: &GameSnapshot) -> Paragraph<'static> {
         let status = if player.alive { "♥" } else { "✝" };
         let label = format!("{} {} {}", player.id, status, player.name);
         lines.push(Line::from(Span::styled(label, Style::default().fg(color))));
-        let info = format!("  bombs: {}/{}", player.bombs_placed, player.max_bombs);
+        let info = format!("  bombs: {}/{}  range: {}  spd: {}",
+            player.bombs_placed,
+            player.max_bombs,
+            player.bomb_range,
+            player.speed,
+        );
         lines.push(Line::from(Span::styled(info, Style::default().fg(Color::Gray))));
         lines.push(Line::from(""));
     }

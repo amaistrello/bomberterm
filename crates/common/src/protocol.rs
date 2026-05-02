@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::types::{Direction, Player, Bomb, Explosion, PlayerId};
+use crate::types::{Direction, Player, Bomb, Explosion, PlayerId, Powerup};
 use crate::map::Map;
 
 // Messages the CLIENT sends to the server
@@ -49,7 +49,8 @@ pub struct GameSnapshot {
     pub explosions: Vec<Explosion>,
     pub map: Map,
     pub phase: GamePhase,
-    pub ready_players: Vec<PlayerId>
+    pub ready_players: Vec<PlayerId>,
+    pub powerups: Vec<Powerup>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

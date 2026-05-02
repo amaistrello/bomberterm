@@ -42,6 +42,8 @@ pub struct Player {
     pub bomb_range: u8,   // how far explosions reach
     pub max_bombs: u8,    // how many bombs placeable at once
     pub bombs_placed: u8, // how many currently on the map
+    pub speed: u8,
+    pub last_moved_tick: u64,
 }
 
 impl Player {
@@ -54,6 +56,8 @@ impl Player {
             bomb_range: 2,
             max_bombs: 1,
             bombs_placed: 0,
+            speed: 1,
+            last_moved_tick: 0,
         }
     }
 }
@@ -70,4 +74,17 @@ pub struct Bomb {
 pub struct Explosion {
     pub cells: Vec<Position>, // every tile the explosion covers
     pub ttl: u8,              // ticks until it disappears
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum PowerupKind {
+    ExtraBomb,
+    LongerRange,
+    Speed,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Powerup {
+    pub pos: Position,
+    pub kind: PowerupKind,
 }

@@ -9,7 +9,7 @@ use tokio_serde::formats::Bincode;
 use futures::{SinkExt, StreamExt};
 use common::protocol::{ClientMsg, ServerMsg, GameSnapshot, GamePhase};
 use common::map::Map;
-use common::types::{Player, PlayerId, Bomb, Explosion, Direction};
+use common::types::{Player, PlayerId, Bomb, Explosion, Direction, Powerup, PowerupKind};
 use tracing::{info, warn, error};
 use std::net::UdpSocket;
 use common::protocol::Beacon;
@@ -39,11 +39,12 @@ impl Default for ServerConfig {
 struct SharedState {
     next_player_id: PlayerId,
     map: Map,
-    map_width: u16,   // ← add
-    map_height: u16,  // ← add
+    map_width: u16,
+    map_height: u16,
     players: HashMap<PlayerId, Player>,
     bombs: Vec<Bomb>,
     explosions: Vec<Explosion>,
+    powerups: Vec<Powerup>,
     tick: u64,
     phase: GamePhase,
     ready_players: Vec<PlayerId>,
@@ -59,6 +60,7 @@ impl SharedState {
             players: HashMap::new(),
             bombs: Vec::new(),
             explosions: Vec::new(),
+            powerups: Vec::new(),
             tick: 0,
             phase: GamePhase::Lobby,
             ready_players: Vec::new(),
@@ -81,7 +83,8 @@ impl SharedState {
             explosions: self.explosions.clone(),
             map: self.map.clone(),
             phase: self.phase.clone(),
-            ready_players: self.ready_players.clone()
+            ready_players: self.ready_players.clone(),
+            powerups: self.powerups.clone()
         }
     }
 
@@ -95,14 +98,14 @@ impl SharedState {
             _ => {}
         }
     }
-    
+
     fn try_start(&mut self) {
         if self.phase != GamePhase::Lobby { return; }
         if self.players.len() < 2 { return; }
-    
+
         let all_ready = self.players.keys()
             .all(|id| self.ready_players.contains(id));
-    
+
         if all_ready {
             self.phase = GamePhase::Running;
             info!("All {} players ready — game starting!", self.players.len());
@@ -187,11 +190,22 @@ async fn game_loop(
                     } else { None }
                 } else { None };
 
+                // Apply movement if the destination is walkable and not occupied by a bomb
                 if let Some((nx, ny)) = new_pos {
                     let bomb_there = s.bombs.iter().any(|b| b.pos == (nx, ny));
                     if s.map.is_walkable(nx, ny) && !bomb_there {
+                        let current_tick = s.tick;
                         if let Some(player) = s.players.get_mut(&input.player_id) {
-                            player.pos = (nx, ny);
+                            // How many ticks must pass between moves:
+                            // speed 1 = every 2 ticks, speed 2 = every tick, speed 3 = every tick (no extra cap)
+                            let move_interval = match player.speed {
+                                1 => 2,
+                                _ => 1,
+                            };
+                            if current_tick.saturating_sub(player.last_moved_tick) >= move_interval {
+                                player.pos = (nx, ny);
+                                player.last_moved_tick = current_tick;
+                            }
                         }
                     }
                 }
@@ -224,7 +238,10 @@ async fn game_loop(
             }
             s.bombs = surviving;
 
-            // 3. Explode
+            // ── 3. Explode ─────────────────────────────────────────────
+            let mut new_powerups: Vec<Powerup> = Vec::new();
+            let mut newly_exploded_cells: Vec<(u16, u16)> = Vec::new();
+            
             let mut detonate_queue = detonating;
             while let Some(bomb) = detonate_queue.pop() {
                 if let Some(p) = s.players.get_mut(&bomb.owner) {
@@ -242,6 +259,17 @@ async fn game_loop(
                             Some(common::map::Tile::Destructible) => {
                                 cells.push((nx, ny));
                                 s.map.destroy(nx, ny);
+                                let roll = (nx as u64 * 31 + ny as u64 * 17 + s.tick * 7) % 100;
+                                if roll < 35 {
+                                    let kind = match roll % 3 {
+                                        0 => PowerupKind::ExtraBomb,
+                                        1 => PowerupKind::LongerRange,
+                                        _ => PowerupKind::Speed,
+                                    };
+                                    if !new_powerups.iter().any(|p| p.pos == (nx, ny)) {
+                                        new_powerups.push(Powerup { pos: (nx, ny), kind });
+                                    }
+                                }
                                 break;
                             }
                             Some(common::map::Tile::Empty) => {
@@ -255,8 +283,16 @@ async fn game_loop(
                         }
                     }
                 }
+                // Track which cells exploded THIS tick specifically
+                newly_exploded_cells.extend(cells.iter().copied());
                 s.explosions.push(Explosion { cells, ttl: 5 });
             }
+            
+            // Only remove powerups hit by THIS tick's explosions — not lingering ones
+            s.powerups.retain(|p| !newly_exploded_cells.contains(&p.pos));
+            
+            // Freshly dropped powerups are safe — they were spawned after the retain
+            s.powerups.extend(new_powerups);
 
             // 4. Kill players
             let explosion_cells: Vec<(u16, u16)> = s.explosions
@@ -265,6 +301,39 @@ async fn game_loop(
                 if player.alive && explosion_cells.contains(&player.pos) {
                     player.alive = false;
                     info!("Player {} killed", player.id);
+                }
+            }
+
+            // 4.5 Powerup pickups
+            let mut picked_up = Vec::new();
+
+            // Destructuring 's' allows simultaneous mutable access to its fields.
+            let SharedState { players, powerups, .. } = &mut *s;
+
+            for player in players.values_mut() {
+                if !player.alive {
+                    continue;
+                }
+
+                // Now 'powerups' and 'player' (from 'players') are seen as disjoint borrows
+                if let Some(idx) = powerups.iter().position(|p| p.pos == player.pos) {
+                    let powerup = powerups.remove(idx);
+
+                    match powerup.kind {
+                        PowerupKind::ExtraBomb => {
+                            player.max_bombs = (player.max_bombs + 1).min(8);
+                            info!("Player {} picked up ExtraBomb (max={})", player.id, player.max_bombs);
+                        }
+                        PowerupKind::LongerRange => {
+                            player.bomb_range = (player.bomb_range + 1).min(10);
+                            info!("Player {} picked up LongerRange (range={})", player.id, player.bomb_range);
+                        }
+                        PowerupKind::Speed => {
+                            player.speed = (player.speed + 1).min(3);
+                            info!("Player {} picked up Speed (speed={})", player.id, player.speed);
+                        }
+                    }
+                    picked_up.push(player.id);
                 }
             }
 
@@ -283,6 +352,7 @@ async fn game_loop(
                     info!("Resetting for rematch");
                     s.map = Map::generate(s.map_width, s.map_height);
                     s.bombs.clear();
+                    s.powerups.clear();
                     s.explosions.clear();
                     s.tick = 0;
                     s.ready_players.clear();
@@ -292,6 +362,7 @@ async fn game_loop(
                             p.alive = true;
                             p.pos = spawn_pos(i as PlayerId);
                             p.bombs_placed = 0;
+                            p.last_moved_tick = 0;
                         }
                     }
                     s.phase = GamePhase::Lobby;
