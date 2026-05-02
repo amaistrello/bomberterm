@@ -70,7 +70,7 @@ impl SharedState {
     fn add_player(&mut self, name: String) -> PlayerId {
         let id = self.next_player_id;
         self.next_player_id += 1;
-        let spawn = spawn_pos(id);
+        let spawn = spawn_pos(id, self.map_width, self.map_height);
         self.players.insert(id, Player::new(id, name, spawn));
         id
     }
@@ -114,16 +114,16 @@ impl SharedState {
 }
 
 
-fn spawn_pos(id: PlayerId) -> (u16, u16) {
+fn spawn_pos(id: PlayerId, w: u16, h: u16) -> (u16, u16) {
     match id % 8 {
-        0 => (1,  1),
-        1 => (23, 19),
-        2 => (1,  19),
-        3 => (23, 1),
-        4 => (1,  10),  // middle left
-        5 => (23, 10),  // middle right
-        6 => (12, 1),   // top middle
-        _ => (12, 19),  // bottom middle
+        0 => (1,       1      ),
+        1 => (w - 2,   h - 2  ),
+        2 => (1,       h - 2  ),
+        3 => (w - 2,   1      ),
+        4 => (1,       h / 2  ),
+        5 => (w - 2,   h / 2  ),
+        6 => (w / 2,   1      ),
+        _ => (w / 2,   h - 2  ),
     }
 }
 
@@ -356,11 +356,13 @@ async fn game_loop(
                     s.explosions.clear();
                     s.tick = 0;
                     s.ready_players.clear();
+                    let w = s.map_width;
+                    let h = s.map_height;
                     let ids: Vec<PlayerId> = s.players.keys().copied().collect();
                     for (i, id) in ids.iter().enumerate() {
                         if let Some(p) = s.players.get_mut(id) {
                             p.alive = true;
-                            p.pos = spawn_pos(i as PlayerId);
+                            p.pos = spawn_pos(i as PlayerId, w, h);
                             p.bombs_placed = 0;
                             p.last_moved_tick = 0;
                         }

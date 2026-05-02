@@ -5,6 +5,7 @@ use tokio_util::codec::LengthDelimitedCodec;
 use tokio_serde::formats::Bincode;
 use futures::{SinkExt, StreamExt};
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
+use crossterm::terminal::size;
 use common::protocol::{ClientMsg, ServerMsg, GameSnapshot, Beacon};
 use common::types::{Direction, PlayerId};
 use tracing::{info, error};
