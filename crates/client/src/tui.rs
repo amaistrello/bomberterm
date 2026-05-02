@@ -2,7 +2,7 @@ use std::io::{self, Stdout};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -13,7 +13,7 @@ use crossterm::{
 };
 use common::map::{Map, Tile};
 use common::protocol::GameSnapshot;
-use common::types::{Bomb, Explosion};
+use common::types::{Bomb, Explosion, PlayerId};
 
 // A type alias for our specific terminal backend
 // CrosstermBackend<Stdout> means: use crossterm, write to stdout
@@ -185,6 +185,68 @@ fn render_connecting(terminal: &mut Term) -> io::Result<()> {
 pub fn render_frame(terminal: &mut Term, state: Option<&crate::ClientState>) -> io::Result<()> {
     match state {
         None => render_connecting(terminal),
-        Some(s) => render(terminal, &s.snapshot.map, &s.snapshot),
+        Some(s) => {
+            // Always render the map underneath
+            render(terminal, &s.snapshot.map, &s.snapshot)?;
+
+            // Overlay the game over screen on top if needed
+            if let common::protocol::GamePhase::GameOver { ref winner } = s.snapshot.phase {
+                render_game_over(terminal, winner, &s.snapshot.players)?;
+            }
+
+            Ok(())
+        }
     }
+}
+
+fn render_game_over(terminal: &mut Term, winner: &Option<PlayerId>, players: &[common::types::Player]) -> io::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+
+        // Centered box — 40 wide, 10 tall
+        let popup = Rect {
+            x: area.width.saturating_sub(40) / 2,
+            y: area.height.saturating_sub(10) / 2,
+            width: 40.min(area.width),
+            height: 10.min(area.height),
+        };
+
+        // Dim the background
+        frame.render_widget(
+            Block::default().style(Style::default().bg(Color::Black)),
+            area,
+        );
+
+        let title = " GAME OVER ";
+        let body = match winner {
+            Some(id) => {
+                let name = players.iter()
+                    .find(|p| p.id == *id)
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("Unknown");
+                format!("🏆  {} wins!", name)
+            }
+            None => "💥  Draw! Everyone died.".to_string(),
+        };
+
+        let text = vec![
+            Line::from(""),
+            Line::from(Span::styled(body, Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD))),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Next round starting soon...",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+
+        frame.render_widget(
+            Paragraph::new(text)
+                .block(Block::default().borders(Borders::ALL).title(title))
+                .alignment(ratatui::layout::Alignment::Center),
+            popup,
+        );
+    })?;
+    Ok(())
 }

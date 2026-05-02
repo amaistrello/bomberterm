@@ -34,6 +34,13 @@ pub enum ServerMsg {
     Rejected { reason: String },
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum GamePhase {
+    Lobby,
+    Running,
+    GameOver { winner: Option<PlayerId> },
+}
+
 // A complete snapshot of the game at one tick
 // This is what gets sent to clients every tick
 #[derive(Serialize, Deserialize, Clone, Debug)]

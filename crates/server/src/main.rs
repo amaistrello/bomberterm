@@ -7,7 +7,7 @@ use tokio::time::{interval, Duration};
 use tokio_util::codec::LengthDelimitedCodec;
 use tokio_serde::formats::Bincode;
 use futures::{SinkExt, StreamExt};
-use common::protocol::{ClientMsg, ServerMsg, GameSnapshot};
+use common::protocol::{ClientMsg, ServerMsg, GameSnapshot, GamePhase};
 use common::map::Map;
 use common::types::{Player, PlayerId, Bomb, Explosion};
 use tracing::{info, warn, error};
@@ -22,6 +22,7 @@ struct SharedState {
     bombs: Vec<Bomb>,
     explosions: Vec<Explosion>,
     tick: u64,
+    phase: GamePhase,
 }
 
 impl SharedState {
@@ -33,13 +34,13 @@ impl SharedState {
             bombs: Vec::new(),
             explosions: Vec::new(),
             tick: 0,
+            phase: GamePhase::Lobby,
         }
     }
 
     fn add_player(&mut self, name: String) -> PlayerId {
         let id = self.next_player_id;
         self.next_player_id += 1;
-        // Each player spawns at a different corner
         let spawn = match id {
             0 => (1,  1),
             1 => (13, 11),
@@ -48,6 +49,13 @@ impl SharedState {
             _ => (1,  1),
         };
         self.players.insert(id, Player::new(id, name, spawn));
+    
+        // Start the game once 2+ players have joined
+        if self.players.len() >= 2 && self.phase == GamePhase::Lobby {
+            self.phase = GamePhase::Running;
+            info!("Game started!");
+        }
+    
         id
     }
 
@@ -57,7 +65,35 @@ impl SharedState {
             players: self.players.values().cloned().collect(),
             bombs: self.bombs.clone(),
             explosions: self.explosions.clone(),
-            map: self.map.clone(),  // ← add this
+            map: self.map.clone(),
+            phase: self.phase.clone(),
+        }
+    }
+
+    fn check_win_condition(&mut self) {
+        // Only check if the game is currently running
+        if self.phase != GamePhase::Running {
+            return;
+        }
+    
+        let alive: Vec<PlayerId> = self.players.values()
+            .filter(|p| p.alive)
+            .map(|p| p.id)
+            .collect();
+    
+        match alive.len() {
+            // One survivor — they win
+            1 => {
+                info!("Player {} wins!", alive[0]);
+                self.phase = GamePhase::GameOver { winner: Some(alive[0]) };
+            }
+            // Everyone is dead — draw
+            0 => {
+                info!("Draw — everyone died");
+                self.phase = GamePhase::GameOver { winner: None };
+            }
+            // Game continues
+            _ => {}
         }
     }
 }
@@ -262,6 +298,40 @@ async fn game_loop(
                 exp.ttl = exp.ttl.saturating_sub(1);
             }
             s.explosions.retain(|e| e.ttl > 0);
+
+            // ── 6. Check win condition ─────────────────────────────────
+            s.check_win_condition();
+            
+            // ── 7. Handle rematch — reset after 5 seconds (50 ticks) ──
+            if let GamePhase::GameOver { .. } = s.phase {
+                // Reuse tick as a countdown — reset when it hits a multiple of 50
+                if s.tick % 50 == 0 && s.tick > 0 {
+                    info!("Resetting game for rematch");
+                    s.map = Map::generate(15, 13);
+                    s.bombs.clear();
+                    s.explosions.clear();
+                    s.tick = 0;
+            
+                    // Respawn all connected players
+                    let ids: Vec<PlayerId> = s.players.keys().copied().collect();
+                    for (i, id) in ids.iter().enumerate() {
+                        let spawn = match i {
+                            0 => (1,  1),
+                            1 => (13, 11),
+                            2 => (1,  11),
+                            3 => (13, 1),
+                            _ => (1,  1),
+                        };
+                        if let Some(p) = s.players.get_mut(id) {
+                            p.alive = true;
+                            p.pos = spawn;
+                            p.bombs_placed = 0;
+                        }
+                    }
+            
+                    s.phase = GamePhase::Running;
+                }
+            }
 
             s.snapshot()
         };
