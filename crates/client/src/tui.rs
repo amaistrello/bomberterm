@@ -57,13 +57,21 @@ fn tile_span(map: &Map, x: u16, y: u16, snapshot: &GameSnapshot) -> Vec<Span<'st
     // This compensates for terminal cells being ~2:1 height:width ratio
     // Without this the map looks squished horizontally
     if let Some(player) = player_here {
-        let color = match player.id {
-            0 => Color::Cyan,
-            1 => Color::Magenta,
-            2 => Color::Yellow,
-            _ => Color::Green,
+        let color = if !player.alive {
+            Color::DarkGray  // dead players are dimmed
+        } else {
+            match player.id {
+                0 => Color::Cyan,
+                1 => Color::Magenta,
+                2 => Color::Yellow,
+                _ => Color::Green,
+            }
         };
-        let label = format!("{} ", player.id);
+        // Show first 2 chars of name so it fits in the 2-wide tile
+        let label = format!(
+            "{} ",
+            player.name.chars().next().unwrap_or('?')
+        );
         return vec![Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD))];
     }
 
@@ -71,8 +79,18 @@ fn tile_span(map: &Map, x: u16, y: u16, snapshot: &GameSnapshot) -> Vec<Span<'st
         return vec![Span::styled("✸ ".to_string(), Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))];
     }
 
-    if has_bomb {
-        return vec![Span::styled("● ".to_string(), Style::default().fg(Color::Yellow))];
+    // Find the bomb at this position if any
+    let bomb_here = snapshot.bombs.iter().find(|b| b.pos == (x, y));
+    
+    if let Some(bomb) = bomb_here {
+        let color = if bomb.timer > 20 {
+            Color::Green
+        } else if bomb.timer > 10 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+        return vec![Span::styled("● ".to_string(), Style::default().fg(color))];
     }
 
     match map.get(x, y) {
@@ -182,19 +200,100 @@ fn render_connecting(terminal: &mut Term) -> io::Result<()> {
     Ok(())
 }
 
+pub fn render_lobby(terminal: &mut Term, players: &[String]) -> io::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(25),
+                Constraint::Min(12),
+                Constraint::Percentage(25),
+            ])
+            .split(area);
+
+        let inner = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(30),
+                Constraint::Length(34),
+                Constraint::Percentage(30),
+            ])
+            .split(outer[1]);
+
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "  BOMBERTERM  ",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Waiting for players...",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Connected:",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(""),
+        ];
+
+        for (i, name) in players.iter().enumerate() {
+            let color = match i {
+                0 => Color::Cyan,
+                1 => Color::Magenta,
+                2 => Color::Yellow,
+                _ => Color::Green,
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  ▶  {}", name),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("  {}/2 players minimum to start", players.len()),
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Q quit",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title(" Lobby ")),
+            inner[1],
+        );
+    })?;
+    Ok(())
+}
+
 // Public entry point — called every frame by the render loop
 pub fn render_frame(terminal: &mut Term, state: Option<&crate::ClientState>) -> io::Result<()> {
     match state {
         None => render_connecting(terminal),
         Some(s) => {
-            // Always render the map underneath
-            render(terminal, &s.snapshot.map, &s.snapshot)?;
-
-            // Overlay the game over screen on top if needed
-            if let common::protocol::GamePhase::GameOver { ref winner } = s.snapshot.phase {
-                render_game_over(terminal, winner, &s.snapshot.players)?;
+            match &s.snapshot.phase {
+                common::protocol::GamePhase::Lobby => {
+                    let names: Vec<String> = s.snapshot.players
+                        .iter()
+                        .map(|p| p.name.clone())
+                        .collect();
+                    render_lobby(terminal, &names)?;
+                }
+                common::protocol::GamePhase::GameOver { ref winner } => {
+                    render(terminal, &s.snapshot.map, &s.snapshot)?;
+                    render_game_over(terminal, winner, &s.snapshot.players)?;
+                }
+                common::protocol::GamePhase::Running => {
+                    render(terminal, &s.snapshot.map, &s.snapshot)?;
+                }
             }
-
             Ok(())
         }
     }

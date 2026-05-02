@@ -57,9 +57,10 @@ impl SharedState {
         self.next_player_id += 1;
         let spawn = spawn_pos(id);
         self.players.insert(id, Player::new(id, name, spawn));
+        // Game starts with 2+ players
         if self.players.len() >= 2 && self.phase == GamePhase::Lobby {
             self.phase = GamePhase::Running;
-            info!("Game started!");
+            info!("Game started with {} players!", self.players.len());
         }
         id
     }
