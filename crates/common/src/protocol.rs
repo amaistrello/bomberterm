@@ -52,3 +52,12 @@ pub struct GameSnapshot {
     pub map: Map,
     pub phase: GamePhase,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Beacon {
+    pub game_name: String,    // host's name + "'s game"
+    pub host_addr: String,    // TCP address to connect to e.g. "192.168.1.5:7777"
+    pub players_current: u8,
+    pub players_max: u8,
+    pub phase: GamePhase,
+}

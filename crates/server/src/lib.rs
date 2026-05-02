@@ -11,6 +11,10 @@ use common::protocol::{ClientMsg, ServerMsg, GameSnapshot, GamePhase};
 use common::map::Map;
 use common::types::{Player, PlayerId, Bomb, Explosion, Direction};
 use tracing::{info, warn, error};
+use std::net::UdpSocket;
+use common::protocol::Beacon;
+
+pub const DISCOVERY_PORT: u16 = 7778;
 
 type FramedStream = tokio_serde::Framed<tokio_util::codec::Framed<TcpStream, LengthDelimitedCodec>, ClientMsg, ServerMsg, Bincode<ClientMsg, ServerMsg>>;
 
@@ -109,6 +113,7 @@ pub async fn run(config: ServerConfig) {
     let (input_tx, input_rx) = mpsc::channel::<PlayerInput>(64);
 
     tokio::spawn(game_loop(state.clone(), snapshot_tx.clone(), input_rx));
+    tokio::spawn(broadcast_beacon(config.port, state.clone()));
 
     loop {
         match listener.accept().await {
@@ -334,4 +339,51 @@ async fn handle_connection(
 fn make_framed(stream: TcpStream) -> FramedStream {
     let ld = tokio_util::codec::Framed::new(stream, LengthDelimitedCodec::new());
     tokio_serde::Framed::new(ld, Bincode::<ClientMsg, ServerMsg>::default())
+}
+
+async fn broadcast_beacon(tcp_port: u16, state: Arc<Mutex<SharedState>>) {
+    // Bind to any port for sending — we just need to blast out UDP broadcasts
+    let socket = match UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(e) => { error!("Failed to bind UDP socket: {}", e); return; }
+    };
+
+    if let Err(e) = socket.set_broadcast(true) {
+        error!("Failed to enable broadcast: {}", e);
+        return;
+    }
+
+    let broadcast_addr = format!("255.255.255.255:{}", DISCOVERY_PORT);
+    let mut ticker = interval(Duration::from_secs(2));
+
+    loop {
+        ticker.tick().await;
+
+        let beacon = {
+            let s = state.lock().unwrap();
+            Beacon {
+                game_name: s.players.values()
+                    .find(|p| p.id == 0)
+                    .map(|p| format!("{}'s game", p.name))
+                    .unwrap_or_else(|| "BomberTerm game".to_string()),
+                host_addr: format!("127.0.0.1:{}", tcp_port),
+                players_current: s.players.len() as u8,
+                players_max: 4,
+                phase: s.phase.clone(),
+            }
+        };
+
+        match bincode::serialize(&beacon) {
+            Ok(bytes) => {
+                let bytes: Vec<u8> = bytes;
+                let bytes_clone = bytes.clone();
+                let addr_clone = broadcast_addr.clone();
+                let socket_ref = socket.try_clone().unwrap();
+                tokio::task::spawn_blocking(move || {
+                    let _ = socket_ref.send_to(&bytes_clone, &addr_clone);
+                });
+            }
+            Err(e) => error!("Failed to serialize beacon: {}", e),
+        }
+    }
 }

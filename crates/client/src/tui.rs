@@ -14,6 +14,7 @@ use crossterm::{
 use common::map::{Map, Tile};
 use common::protocol::GameSnapshot;
 use common::types::{Bomb, Explosion, PlayerId};
+use crate::app::DiscoveredServer;
 
 // A type alias for our specific terminal backend
 // CrosstermBackend<Stdout> means: use crossterm, write to stdout
@@ -352,6 +353,129 @@ pub fn render_enter_name(terminal: &mut Term, input: &str, hosting: bool) -> io:
         frame.render_widget(
             Paragraph::new(lines)
                 .block(Block::default().borders(Borders::ALL).title(title)),
+            inner[1],
+        );
+    })?;
+    Ok(())
+}
+
+pub fn render_server_browser(
+    terminal: &mut Term,
+    servers: &[DiscoveredServer],
+    cursor: usize,
+) -> io::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(20),
+                Constraint::Min(10),
+                Constraint::Percentage(20),
+            ])
+            .split(area);
+
+        let inner = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(20),
+                Constraint::Min(40),
+                Constraint::Percentage(20),
+            ])
+            .split(outer[1]);
+
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "Searching for games on LAN...",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(""),
+        ];
+
+        if servers.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  No games found yet",
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            for (i, server) in servers.iter().enumerate() {
+                let selected = i == cursor;
+                let prefix = if selected { " ▶  " } else { "    " };
+                let color = if selected { Color::Cyan } else { Color::Gray };
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{}{} ({}/{})",
+                        prefix,
+                        server.game_name,
+                        server.players_current,
+                        server.players_max,
+                    ),
+                    Style::default().fg(color).add_modifier(
+                        if selected { Modifier::BOLD } else { Modifier::empty() }
+                    ),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("     {}", server.addr),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Enter join   M manual IP   Esc back",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title(" Join a Game ")),
+            inner[1],
+        );
+    })?;
+    Ok(())
+}
+
+pub fn render_manual_ip(terminal: &mut Term, input: &str) -> io::Result<()> {
+    terminal.draw(|frame| {
+        let area = frame.area();
+
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(35),
+                Constraint::Length(8),
+                Constraint::Percentage(35),
+            ])
+            .split(area);
+
+        let inner = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(25),
+                Constraint::Min(36),
+                Constraint::Percentage(25),
+            ])
+            .split(outer[1]);
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled("Server address (host:port):", Style::default().fg(Color::Gray))),
+            Line::from(Span::styled(
+                format!(" {}▌", input),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Enter confirm   Esc back",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title(" Manual IP ")),
             inner[1],
         );
     })?;

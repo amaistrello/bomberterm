@@ -1,13 +1,25 @@
-// Every screen the client can be on
+use std::net::SocketAddr;
+use std::time::Instant;
+
+#[derive(Debug, Clone)]
+pub struct DiscoveredServer {
+    pub game_name: String,
+    pub addr: String,
+    pub players_current: u8,
+    pub players_max: u8,
+    pub last_seen: Instant,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
     MainMenu { cursor: usize },
     EnterName { input: String, mode: NameMode },
+    ServerBrowser { cursor: usize },
+    ManualIp { input: String },
     Connecting,
     InGame,
 }
 
-// Are we hosting or joining?
 #[derive(Debug, Clone, PartialEq)]
 pub enum NameMode {
     Host,

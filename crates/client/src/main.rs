@@ -1,18 +1,18 @@
-use tokio::net::TcpStream;
+use std::time::{Duration, Instant};
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio_util::codec::LengthDelimitedCodec;
 use tokio_serde::formats::Bincode;
 use futures::{SinkExt, StreamExt};
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
-use common::protocol::{ClientMsg, ServerMsg, GameSnapshot};
+use common::protocol::{ClientMsg, ServerMsg, GameSnapshot, Beacon};
 use common::types::Direction;
-use tracing::info;
-use tracing::error;
+use tracing::{info, error};
 
 mod tui;
 mod app;
 
-use app::{Screen, NameMode, MENU_ITEMS};
+use app::{Screen, NameMode, DiscoveredServer, MENU_ITEMS};
 
 type FramedStream = tokio_serde::Framed<tokio_util::codec::Framed<TcpStream, LengthDelimitedCodec>, ServerMsg, ClientMsg, Bincode<ServerMsg, ClientMsg>>;
 
@@ -31,8 +31,35 @@ async fn main() {
     let mut events = EventStream::new();
     let mut screen = Screen::main_menu();
 
+    // Discovered servers — populated by the UDP listener task
+    let (beacon_tx, mut beacon_rx) = mpsc::channel::<Beacon>(16);
+    tokio::spawn(listen_for_beacons(beacon_tx));
+
+    // Servers we've heard from recently
+    let mut servers: Vec<DiscoveredServer> = Vec::new();
+
     loop {
-        // ── Render current screen ──────────────────────────────────────────
+        // Drain any new beacons into the servers list
+        while let Ok(beacon) = beacon_rx.try_recv() {
+            if let Some(existing) = servers.iter_mut().find(|s| s.addr == beacon.host_addr) {
+                // Update existing entry
+                existing.players_current = beacon.players_current;
+                existing.last_seen = Instant::now();
+            } else {
+                servers.push(DiscoveredServer {
+                    game_name: beacon.game_name,
+                    addr: beacon.host_addr,
+                    players_current: beacon.players_current,
+                    players_max: beacon.players_max,
+                    last_seen: Instant::now(),
+                });
+            }
+        }
+
+        // Remove servers we haven't heard from in 6 seconds
+        servers.retain(|s| s.last_seen.elapsed() < Duration::from_secs(6));
+
+        // Render
         match &screen {
             Screen::MainMenu { cursor } => {
                 tui::render_main_menu(&mut terminal, *cursor).expect("render failed");
@@ -41,79 +68,167 @@ async fn main() {
                 let hosting = matches!(mode, NameMode::Host);
                 tui::render_enter_name(&mut terminal, input, hosting).expect("render failed");
             }
+            Screen::ServerBrowser { cursor } => {
+                tui::render_server_browser(&mut terminal, &servers, *cursor).expect("render failed");
+            }
+            Screen::ManualIp { input } => {
+                tui::render_manual_ip(&mut terminal, input).expect("render failed");
+            }
             Screen::Connecting => {
                 tui::render_frame(&mut terminal, None).expect("render failed");
             }
             Screen::InGame => {}
         }
 
-        // ── Handle input ───────────────────────────────────────────────────
-        if let Some(Ok(Event::Key(key))) = events.next().await {
-            match &mut screen {
-                Screen::MainMenu { cursor } => {
-                    match key.code {
-                        KeyCode::Up => {
-                            if *cursor > 0 { *cursor -= 1; }
-                        }
-                        KeyCode::Down => {
-                            if *cursor < MENU_ITEMS.len() - 1 { *cursor += 1; }
-                        }
-                        KeyCode::Enter => {
-                            match *cursor {
-                                0 => screen = Screen::EnterName {
-                                    input: String::new(),
-                                    mode: NameMode::Host,
-                                },
-                                1 => screen = Screen::EnterName {
-                                    input: String::new(),
-                                    mode: NameMode::Join {
-                                        addr: "127.0.0.1:7777".to_string(),
-                                    },
-                                },
-                                2 => break,
-                                _ => {}
-                            }
-                        }
-                        KeyCode::Char('q') => break,
+        // Input — timeout after 100ms so we redraw and drain beacons regularly
+        let event = tokio::time::timeout(
+            Duration::from_millis(100),
+            events.next(),
+        ).await;
+
+        let key = match event {
+            Ok(Some(Ok(Event::Key(k)))) => k,
+            _ => continue, // timeout or non-key event — just redraw
+        };
+
+        match &mut screen {
+            Screen::MainMenu { cursor } => {
+                match key.code {
+                    KeyCode::Up   => { if *cursor > 0 { *cursor -= 1; } }
+                    KeyCode::Down => { if *cursor < MENU_ITEMS.len() - 1 { *cursor += 1; } }
+                    KeyCode::Enter => match *cursor {
+                        0 => screen = Screen::EnterName {
+                            input: String::new(),
+                            mode: NameMode::Host,
+                        },
+                        1 => screen = Screen::ServerBrowser { cursor: 0 },
+                        2 => break,
                         _ => {}
-                    }
+                    },
+                    KeyCode::Char('q') => break,
+                    _ => {}
                 }
-
-                Screen::EnterName { input, mode } => {
-                    match key.code {
-                        KeyCode::Esc => {
-                            screen = Screen::main_menu();
-                        }
-                        KeyCode::Enter if !input.is_empty() => {
-                            let name = input.clone();
-                            let mode = mode.clone();
-
-                            run_game_session(
-                                &mut terminal,
-                                &mut events,
-                                name,
-                                mode,
-                            ).await;
-
-                            screen = Screen::main_menu();
-                        }
-                        KeyCode::Backspace => { input.pop(); }
-                        KeyCode::Char(c) if input.len() < 16 => {
-                            if !key.modifiers.contains(KeyModifiers::CONTROL) {
-                                input.push(c);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                Screen::Connecting | Screen::InGame => {}
             }
+
+            Screen::ServerBrowser { cursor } => {
+                match key.code {
+                    KeyCode::Esc => { screen = Screen::main_menu(); }
+                    KeyCode::Up   => { if *cursor > 0 { *cursor -= 1; } }
+                    KeyCode::Down => {
+                        if !servers.is_empty() && *cursor < servers.len() - 1 {
+                            *cursor += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(server) = servers.get(*cursor) {
+                            let addr = server.addr.clone();
+                            screen = Screen::EnterName {
+                                input: String::new(),
+                                mode: NameMode::Join { addr },
+                            };
+                        }
+                    }
+                    KeyCode::Char('m') | KeyCode::Char('M') => {
+                        screen = Screen::ManualIp { input: String::new() };
+                    }
+                    _ => {}
+                }
+            }
+
+            Screen::ManualIp { input } => {
+                match key.code {
+                    KeyCode::Esc => { screen = Screen::ServerBrowser { cursor: 0 }; }
+                    KeyCode::Enter if !input.is_empty() => {
+                        let addr = if input.contains(':') {
+                            input.clone()
+                        } else {
+                            format!("{}:7777", input) // default port if omitted
+                        };
+                        screen = Screen::EnterName {
+                            input: String::new(),
+                            mode: NameMode::Join { addr },
+                        };
+                    }
+                    KeyCode::Backspace => { input.pop(); }
+                    KeyCode::Char(c) if input.len() < 21 => {
+                        if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                            input.push(c);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Screen::EnterName { input, mode } => {
+                match key.code {
+                    KeyCode::Esc => { screen = Screen::main_menu(); }
+                    KeyCode::Enter if !input.is_empty() => {
+                        let name = input.clone();
+                        let mode = mode.clone();
+                        run_game_session(&mut terminal, &mut events, name, mode).await;
+                        screen = Screen::main_menu();
+                    }
+                    KeyCode::Backspace => { input.pop(); }
+                    KeyCode::Char(c) if input.len() < 16 => {
+                        if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                            input.push(c);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Screen::Connecting | Screen::InGame => {}
         }
     }
 
     tui::teardown(&mut terminal).expect("teardown failed");
     println!("Bye!");
+}
+
+// Listens on the UDP discovery port and forwards beacons into a channel
+async fn listen_for_beacons(tx: mpsc::Sender<Beacon>) {
+    use socket2::{Socket, Domain, Type, Protocol};
+    use std::net::SocketAddr;
+
+    // Build the socket manually so we can set SO_REUSEPORT before binding
+    let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)) {
+        Ok(s) => s,
+        Err(e) => { error!("UDP socket creation failed: {}", e); return; }
+    };
+
+    let _ = socket.set_reuse_address(true);
+    let _ = socket.set_reuse_port(true);
+
+    let addr: SocketAddr = format!("0.0.0.0:{}", server::DISCOVERY_PORT)
+        .parse().unwrap();
+
+    if let Err(e) = socket.bind(&addr.into()) {
+        error!("UDP bind failed: {}", e);
+        return;
+    }
+
+    // Convert std socket → tokio socket
+    socket.set_nonblocking(true).unwrap();
+    let udp: std::net::UdpSocket = socket.into();
+    let socket = match UdpSocket::from_std(udp) {
+        Ok(s) => s,
+        Err(e) => { error!("Failed to convert UDP socket: {}", e); return; }
+    };
+
+    info!("Listening for beacons on port {}", server::DISCOVERY_PORT);
+
+    let mut buf = vec![0u8; 1024];
+    loop {
+        match socket.recv_from(&mut buf).await {
+            Ok((len, _addr)) => {
+                if let Ok(beacon) = bincode::deserialize::<Beacon>(&buf[..len]) {
+                    let _ = tx.send(beacon).await;
+                }
+            }
+            Err(e) => { error!("UDP recv error: {}", e); break; }
+        }
+    }
 }
 
 async fn run_game_session(
