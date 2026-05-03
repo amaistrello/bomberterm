@@ -23,6 +23,7 @@ pub struct ServerConfig {
     pub max_players: u8,
     pub map_width: u16,
     pub map_height: u16,
+    pub host_name: String
 }
 
 impl Default for ServerConfig {
@@ -32,6 +33,7 @@ impl Default for ServerConfig {
             max_players: 8,
             map_width: 25,
             map_height: 21,
+            host_name: "Host".to_string()
         }
     }
 }
@@ -148,7 +150,7 @@ pub async fn run(config: ServerConfig) {
     let (input_tx, input_rx) = mpsc::channel::<PlayerInput>(64);
 
     tokio::spawn(game_loop(state.clone(), snapshot_tx.clone(), input_rx));
-    tokio::spawn(broadcast_beacon(config.port, state.clone()));
+    tokio::spawn(broadcast_beacon(config.port, config.host_name.clone(), state.clone()));
 
     loop {
         match listener.accept().await {
@@ -458,8 +460,7 @@ fn make_framed(stream: TcpStream) -> FramedStream {
     tokio_serde::Framed::new(ld, Bincode::<ClientMsg, ServerMsg>::default())
 }
 
-async fn broadcast_beacon(tcp_port: u16, state: Arc<Mutex<SharedState>>) {
-    // Bind to any port for sending — we just need to blast out UDP broadcasts
+async fn broadcast_beacon(tcp_port: u16, host_name: String, state: Arc<Mutex<SharedState>>) {
     let socket = match UdpSocket::bind("0.0.0.0:0") {
         Ok(s) => s,
         Err(e) => { error!("Failed to bind UDP socket: {}", e); return; }
@@ -471,6 +472,7 @@ async fn broadcast_beacon(tcp_port: u16, state: Arc<Mutex<SharedState>>) {
     }
 
     let broadcast_addr = format!("255.255.255.255:{}", DISCOVERY_PORT);
+    let game_name = format!("{}'s game", host_name);
     let mut ticker = interval(Duration::from_secs(2));
 
     loop {
@@ -479,13 +481,10 @@ async fn broadcast_beacon(tcp_port: u16, state: Arc<Mutex<SharedState>>) {
         let beacon = {
             let s = state.lock().unwrap();
             Beacon {
-                game_name: s.players.values()
-                    .find(|p| p.id == 0)
-                    .map(|p| format!("{}'s game", p.name))
-                    .unwrap_or_else(|| "BomberTerm game".to_string()),
+                game_name: game_name.clone(),
                 host_addr: format!("127.0.0.1:{}", tcp_port),
                 players_current: s.players.len() as u8,
-                players_max: 4,
+                players_max: s.players.len().max(s.next_player_id as usize) as u8,
                 phase: s.phase.clone(),
             }
         };

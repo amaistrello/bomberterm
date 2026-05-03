@@ -20,7 +20,7 @@ type FramedStream = tokio_serde::Framed<tokio_util::codec::Framed<TcpStream, Len
 #[derive(Clone)]
 pub struct ClientState {
     pub snapshot: GameSnapshot,
-    pub your_id: PlayerId, // ← add this
+    pub your_id: PlayerId,
 }
 
 #[tokio::main]
@@ -269,6 +269,7 @@ async fn run_game_session(
             max_players: 8,
             map_width,
             map_height,
+            host_name: name.clone(),
         }));
     
         tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
