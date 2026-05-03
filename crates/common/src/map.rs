@@ -23,6 +23,7 @@ impl Map {
         let w = width as usize;
         let h = height as usize;
     
+        // Step 1 — hard walls
         for y in 0..h {
             for x in 0..w {
                 if x == 0 || y == 0 || x == w - 1 || y == h - 1 {
@@ -33,22 +34,55 @@ impl Map {
             }
         }
     
-        // Protect 2-tile corridors around all 8 spawn positions
-        let spawns: Vec<(usize, usize)> = vec![
-            (1, 1), (2, 1), (1, 2),
-            (w-2, h-2), (w-3, h-2), (w-2, h-3),
-            (1, h-2), (2, h-2), (1, h-3),
-            (w-2, 1), (w-3, 1), (w-2, 2),
-            // middle spawns
-            (1, h/2), (2, h/2),
-            (w-2, h/2), (w-3, h/2),
-            (w/2, 1), (w/2, 2),
-            (w/2, h-2), (w/2, h-3),
+        // Step 2 — build protected zones around all 8 spawn positions
+        // These mirror spawn_pos() exactly so they always match
+        let spawns_logical: Vec<(usize, usize)> = vec![
+            (1,         1        ),   // player 0 — top left
+            (w - 2,     h - 2    ),   // player 1 — bottom right
+            (1,         h - 2    ),   // player 2 — bottom left
+            (w - 2,     1        ),   // player 3 — top right
+            (1,         h / 2    ),   // player 4 — middle left
+            (w - 2,     h / 2    ),   // player 5 — middle right
+            (w / 2,     1        ),   // player 6 — top middle
+            (w / 2,     h - 2    ),   // player 7 — bottom middle
         ];
     
-        for y in 0..h {
-            for x in 0..w {
-                if tiles[y][x] == Tile::Empty && !spawns.contains(&(x, y)) {
+        // For each spawn, protect a 2-tile L-shaped corridor so the player
+        // can always move in at least two directions immediately
+        let mut protected: Vec<(usize, usize)> = Vec::new();
+        for (sx, sy) in &spawns_logical {
+            let sx = *sx;
+            let sy = *sy;
+    
+            // The spawn tile itself
+            protected.push((sx, sy));
+    
+            // Two tiles away from each border wall in both axes
+            // This guarantees the player has room to move without
+            // immediately walking into a destructible block
+            let left  = sx.saturating_sub(2);
+            let right = (sx + 2).min(w - 1);
+            let up    = sy.saturating_sub(2);
+            let down  = (sy + 2).min(h - 1);
+    
+            // Horizontal corridor
+            for x in left..=right {
+                protected.push((x, sy));
+            }
+    
+            // Vertical corridor
+            for y in up..=down {
+                protected.push((sx, y));
+            }
+        }
+    
+        // Step 3 — fill non-protected empty tiles with destructible blocks
+        // Use a simple deterministic pattern based on position
+        // so the map looks the same every time for the same dimensions
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                if tiles[y][x] == Tile::Empty && !protected.contains(&(x, y)) {
+                    // ~40% chance — feels dense without being suffocating
                     if (x * 7 + y * 13) % 10 < 4 {
                         tiles[y][x] = Tile::Destructible;
                     }
