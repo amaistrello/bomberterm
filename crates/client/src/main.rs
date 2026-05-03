@@ -241,7 +241,36 @@ async fn run_game_session(
 ) {
     if matches!(mode, NameMode::Host) {
         info!("Starting embedded server...");
-        tokio::spawn(server::run(server::ServerConfig::default()));
+    
+        // Read terminal size right now — the TUI is already running so this is accurate
+        let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    
+        // Map panel width = total cols minus sidebar (26) minus borders (2)
+        // Each tile renders as 2 chars wide so divide by 2
+        let map_width = (term_cols.saturating_sub(28)) / 2;
+    
+        // Map height = total rows minus help bar (3) minus borders (2)
+        let map_height = term_rows.saturating_sub(5);
+    
+        // Bomberman maps need odd dimensions so the pillar pattern works correctly
+        // (hard walls sit on every even coordinate — odd dimensions ensure
+        //  the border walls are always at an even+1 position)
+        let map_width  = if map_width  % 2 == 0 { map_width  - 1 } else { map_width  };
+        let map_height = if map_height % 2 == 0 { map_height - 1 } else { map_height };
+    
+        // Clamp to a sane minimum so tiny terminals don't break the game
+        let map_width  = map_width.max(15);
+        let map_height = map_height.max(13);
+    
+        info!("Map size: {}x{} (terminal {}x{})", map_width, map_height, term_cols, term_rows);
+    
+        tokio::spawn(server::run(server::ServerConfig {
+            port: 7777,
+            max_players: 8,
+            map_width,
+            map_height,
+        }));
+    
         tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
     }
 

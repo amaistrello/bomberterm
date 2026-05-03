@@ -137,7 +137,10 @@ fn build_map_widget(map: &Map, snapshot: &GameSnapshot) -> Paragraph<'static> {
 // Builds the sidebar showing player info
 fn build_sidebar_widget(snapshot: &GameSnapshot) -> Paragraph<'static> {
     let mut lines: Vec<Line> = vec![
-        Line::from(Span::styled("PLAYERS", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "PLAYERS",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
     ];
 
@@ -155,18 +158,26 @@ fn build_sidebar_widget(snapshot: &GameSnapshot) -> Paragraph<'static> {
 
         let status = if player.alive { "♥" } else { "✝" };
         let label = format!("{} {} {}", player.id, status, player.name);
-        lines.push(Line::from(Span::styled(label, Style::default().fg(color))));
-        let info = format!("  bombs: {}/{}  range: {}  spd: {}",
+        lines.push(Line::from(Span::styled(
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )));
+
+        // Stats line — tighter format to fit in 28 cols
+        let stats = format!(
+            "  💣{}/{}  ◈{}  »{}",
             player.bombs_placed,
             player.max_bombs,
             player.bomb_range,
             player.speed,
         );
-        lines.push(Line::from(Span::styled(info, Style::default().fg(Color::Gray))));
+        lines.push(Line::from(Span::styled(
+            stats,
+            Style::default().fg(Color::Gray),
+        )));
         lines.push(Line::from(""));
     }
 
-    lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("Tick: {}", snapshot.tick),
         Style::default().fg(Color::DarkGray),
@@ -183,6 +194,8 @@ fn build_help_widget() -> Paragraph<'static> {
         Span::raw("Move  "),
         Span::styled(" Space ", Style::default().fg(Color::Yellow)),
         Span::raw("Bomb  "),
+        Span::styled(" R ", Style::default().fg(Color::Yellow)),
+        Span::raw("Ready  "),
         Span::styled(" Q ", Style::default().fg(Color::Yellow)),
         Span::raw("Quit"),
     ]))
@@ -202,7 +215,7 @@ pub fn render(terminal: &mut Term, map: &Map, snapshot: &GameSnapshot) -> io::Re
         // Split the main area into: map (left) and sidebar (right, 20 cols)
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(26)])
+            .constraints([Constraint::Min(0), Constraint::Length(28)])
             .split(vertical[0]);
 
         frame.render_widget(build_map_widget(map, snapshot), horizontal[0]);

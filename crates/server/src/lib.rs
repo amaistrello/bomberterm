@@ -71,7 +71,11 @@ impl SharedState {
         let id = self.next_player_id;
         self.next_player_id += 1;
         let spawn = spawn_pos(id, self.map_width, self.map_height);
-        self.players.insert(id, Player::new(id, name, spawn));
+        let mut player = Player::new(id, name, spawn);
+    
+        player.bomb_range = ((self.map_width / 15) + 1).min(8) as u8;
+    
+        self.players.insert(id, player);
         id
     }
 
@@ -365,6 +369,9 @@ async fn game_loop(
                             p.pos = spawn_pos(i as PlayerId, w, h);
                             p.bombs_placed = 0;
                             p.last_moved_tick = 0;
+                            p.bomb_range = ((w / 15) + 1).min(8) as u8; 
+                            p.max_bombs = 1;
+                            p.speed = 1;  
                         }
                     }
                     s.phase = GamePhase::Lobby;
