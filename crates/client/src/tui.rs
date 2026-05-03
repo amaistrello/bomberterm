@@ -333,7 +333,6 @@ pub fn render_lobby(terminal: &mut Term, players: &[common::types::Player], read
     Ok(())
 }
 
-// Public entry point — called every frame by the render loop
 pub fn render_frame(terminal: &mut Term, state: Option<&crate::ClientState>) -> io::Result<()> {
     match state {
         None => render_connecting(terminal),
@@ -348,7 +347,8 @@ pub fn render_frame(terminal: &mut Term, state: Option<&crate::ClientState>) -> 
                     )?;
                 }
                 common::protocol::GamePhase::GameOver { ref winner } => {
-                    render_game_over(terminal, winner, &s.snapshot.players)?;
+                    // Pass the full snapshot so we can render the map behind and use death_order
+                    render_game_over(terminal, winner, &s.snapshot)?;
                 }
                 common::protocol::GamePhase::Running => {
                     render(terminal, &s.snapshot.map, &s.snapshot)?;
@@ -359,52 +359,98 @@ pub fn render_frame(terminal: &mut Term, state: Option<&crate::ClientState>) -> 
     }
 }
 
-fn render_game_over(terminal: &mut Term, winner: &Option<PlayerId>, players: &[common::types::Player]) -> io::Result<()> {
+fn render_game_over(
+    terminal: &mut Term,
+    winner: &Option<PlayerId>,
+    snapshot: &common::protocol::GameSnapshot,
+) -> io::Result<()> {
     terminal.draw(|frame| {
         let area = frame.area();
 
-        // Centered box — 40 wide, 10 tall
+        // Build rankings: winner first, then death_order reversed
+        // death_order is earliest-dead first, so reversing gives us
+        // last-to-die (2nd place) down to first-to-die (last place)
+        let mut rankings: Vec<PlayerId> = Vec::new();
+        if let Some(winner_id) = winner {
+            rankings.push(*winner_id);
+        }
+        for id in snapshot.death_order.iter().rev() {
+            rankings.push(*id);
+        }
+
+        // Popup height scales with number of players
+        let popup_height = (5 + rankings.len() as u16 + 3).min(area.height);
+        let popup_width = 44u16.min(area.width);
+
         let popup = Rect {
-            x: area.width.saturating_sub(40) / 2,
-            y: area.height.saturating_sub(10) / 2,
-            width: 40.min(area.width),
-            height: 10.min(area.height),
+            x: area.width.saturating_sub(popup_width) / 2,
+            y: area.height.saturating_sub(popup_height) / 2,
+            width: popup_width,
+            height: popup_height,
         };
 
-        // Dim the background
+        // Dark background for the popup only
         frame.render_widget(
             Block::default().style(Style::default().bg(Color::Black)),
-            area,
+            popup,
         );
 
-        let title = " GAME OVER ";
-        let body = match winner {
-            Some(id) => {
-                let name = players.iter()
-                    .find(|p| p.id == *id)
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("Unknown");
-                format!("🏆  {} wins!", name)
-            }
-            None => "💥  Draw! Everyone died.".to_string(),
-        };
+        let medals = ["🥇", "🥈", "🥉", "  ", "  ", "  ", "  ", "  "];
+        let mut lines = vec![Line::from("")];
 
-        let text = vec![
-            Line::from(""),
-            Line::from(Span::styled(body, Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD))),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Next round starting soon...",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ];
+        // Draw line if no winner
+        if winner.is_none() {
+            lines.push(Line::from(Span::styled(
+                " 💥  Draw — everyone died",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+        }
+
+        for (i, id) in rankings.iter().enumerate() {
+            let name = snapshot.players.iter()
+                .find(|p| p.id == *id)
+                .map(|p| p.name.as_str())
+                .unwrap_or("?");
+
+            let color = match *id {
+                0 => Color::Cyan,
+                1 => Color::Magenta,
+                2 => Color::Yellow,
+                3 => Color::Green,
+                4 => Color::Red,
+                5 => Color::Blue,
+                6 => Color::LightCyan,
+                _ => Color::LightMagenta,
+            };
+
+            let medal = medals.get(i).copied().unwrap_or("  ");
+            let place = i + 1;
+
+            let style = if i == 0 {
+                Style::default().fg(color).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(color)
+            };
+
+            lines.push(Line::from(vec![
+                Span::raw(format!(" {} ", medal)),
+                Span::styled(format!("{}. {}", place, name), style),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Returning to lobby soon...",
+            Style::default().fg(Color::DarkGray),
+        )));
 
         frame.render_widget(
-            Paragraph::new(text)
-                .block(Block::default().borders(Borders::ALL).title(title))
-                .alignment(ratatui::layout::Alignment::Center),
+            Paragraph::new(lines)
+                .block(Block::default().borders(Borders::ALL).title(" Game Over "))
+                .alignment(ratatui::layout::Alignment::Left),
             popup,
         );
     })?;

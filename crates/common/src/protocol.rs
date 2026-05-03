@@ -51,6 +51,7 @@ pub struct GameSnapshot {
     pub phase: GamePhase,
     pub ready_players: Vec<PlayerId>,
     pub powerups: Vec<Powerup>,
+    pub death_order: Vec<PlayerId>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

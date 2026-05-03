@@ -50,6 +50,7 @@ struct SharedState {
     tick: u64,
     phase: GamePhase,
     ready_players: Vec<PlayerId>,
+    death_order: Vec<PlayerId>, 
 }
 
 impl SharedState {
@@ -66,6 +67,7 @@ impl SharedState {
             tick: 0,
             phase: GamePhase::Lobby,
             ready_players: Vec::new(),
+            death_order: Vec::new(), 
         }
     }
 
@@ -90,7 +92,8 @@ impl SharedState {
             map: self.map.clone(),
             phase: self.phase.clone(),
             ready_players: self.ready_players.clone(),
-            powerups: self.powerups.clone()
+            powerups: self.powerups.clone(),
+            death_order: self.death_order.clone()
         }
     }
 
@@ -303,12 +306,16 @@ async fn game_loop(
             // 4. Kill players
             let explosion_cells: Vec<(u16, u16)> = s.explosions
                 .iter().flat_map(|e| e.cells.iter().copied()).collect();
+            
+            let mut newly_dead: Vec<PlayerId> = Vec::new();
             for player in s.players.values_mut() {
                 if player.alive && explosion_cells.contains(&player.pos) {
                     player.alive = false;
+                    newly_dead.push(player.id);
                     info!("Player {} killed", player.id);
                 }
             }
+            s.death_order.extend(newly_dead);
 
             // 4.5 Powerup pickups
             let mut picked_up = Vec::new();
@@ -354,7 +361,7 @@ async fn game_loop(
 
             // 7. Rematch
             if let GamePhase::GameOver { .. } = s.phase {
-                if s.tick % 50 == 0 && s.tick > 0 {
+                if s.tick % 100 == 0 && s.tick > 0 {
                     info!("Resetting for rematch");
                     s.map = Map::generate(s.map_width, s.map_height);
                     s.bombs.clear();
@@ -362,6 +369,7 @@ async fn game_loop(
                     s.explosions.clear();
                     s.tick = 0;
                     s.ready_players.clear();
+                    s.death_order.clear();
                     let w = s.map_width;
                     let h = s.map_height;
                     let ids: Vec<PlayerId> = s.players.keys().copied().collect();
