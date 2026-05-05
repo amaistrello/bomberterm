@@ -481,6 +481,9 @@ async fn broadcast_beacon(tcp_port: u16, host_name: String, state: Arc<Mutex<Sha
 
     let broadcast_addr = format!("255.255.255.255:{}", DISCOVERY_PORT);
     let game_name = format!("{}'s game", host_name);
+    let tcp_addr = format!("{}:{}", local_ip(), tcp_port);
+    info!("Beacon will advertise TCP address: {}", tcp_addr);
+
     let mut ticker = interval(Duration::from_secs(2));
 
     loop {
@@ -490,9 +493,9 @@ async fn broadcast_beacon(tcp_port: u16, host_name: String, state: Arc<Mutex<Sha
             let s = state.lock().unwrap();
             Beacon {
                 game_name: game_name.clone(),
-                host_addr: format!("127.0.0.1:{}", tcp_port),
+                host_addr: tcp_addr.clone(),
                 players_current: s.players.len() as u8,
-                players_max: s.players.len().max(s.next_player_id as usize) as u8,
+                players_max: 8,
                 phase: s.phase.clone(),
             }
         };
@@ -510,4 +513,17 @@ async fn broadcast_beacon(tcp_port: u16, host_name: String, state: Arc<Mutex<Sha
             Err(e) => error!("Failed to serialize beacon: {}", e),
         }
     }
+}
+
+fn local_ip() -> String {
+    // Trick: open a UDP socket and "connect" to a public address.
+    // No data is sent — but the OS picks the right local interface
+    // and we can read its IP from the socket.
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok();
+    socket.and_then(|s| {
+        s.connect("8.8.8.8:80").ok()?;
+        s.local_addr().ok()
+    })
+    .map(|addr| addr.ip().to_string())
+    .unwrap_or_else(|| "127.0.0.1".to_string())
 }
