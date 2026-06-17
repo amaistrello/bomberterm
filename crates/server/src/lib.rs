@@ -41,8 +41,13 @@ impl Default for ServerConfig {
 struct SharedState {
     next_player_id: PlayerId,
     map: Map,
+    // Current map dimensions — re-sized to the player count at each match start.
     map_width: u16,
     map_height: u16,
+    // Upper bound derived from the host's terminal, so the map never overflows
+    // the screen no matter how many players join.
+    max_width: u16,
+    max_height: u16,
     players: HashMap<PlayerId, Player>,
     bombs: Vec<Bomb>,
     explosions: Vec<Explosion>,
@@ -54,12 +59,15 @@ struct SharedState {
 }
 
 impl SharedState {
-    fn new(map_width: u16, map_height: u16) -> Self {
+    fn new(max_width: u16, max_height: u16) -> Self {
         Self {
             next_player_id: 0,
-            map: Map::generate(map_width, map_height),
-            map_width,
-            map_height,
+            // Generated at full size for now; resized to the player count when the match starts.
+            map: Map::generate(max_width, max_height),
+            map_width: max_width,
+            map_height: max_height,
+            max_width,
+            max_height,
             players: HashMap::new(),
             bombs: Vec::new(),
             explosions: Vec::new(),
@@ -76,9 +84,9 @@ impl SharedState {
         self.next_player_id += 1;
         let spawn = spawn_pos(id, self.map_width, self.map_height);
         let mut player = Player::new(id, name, spawn);
-    
-        player.bomb_range = ((self.map_width / 15) + 1).min(8) as u8;
-    
+
+        player.bomb_range = bomb_range_for_width(self.map_width);
+
         self.players.insert(id, player);
         id
     }
@@ -116,12 +124,55 @@ impl SharedState {
             .all(|id| self.ready_players.contains(id));
 
         if all_ready {
-            self.phase = GamePhase::Running;
-            info!("All {} players ready — game starting!", self.players.len());
+            self.start_match();
         }
+    }
+
+    // Begins the match: sizes the map to the number of players (capped to the
+    // host's terminal), regenerates it, and places every player at a fresh spawn.
+    fn start_match(&mut self) {
+        let (w, h) = map_size_for_players(self.players.len(), self.max_width, self.max_height);
+        self.map_width = w;
+        self.map_height = h;
+        self.map = Map::generate(w, h);
+
+        // Sort ids so spawn assignment is deterministic and players are spread out.
+        let mut ids: Vec<PlayerId> = self.players.keys().copied().collect();
+        ids.sort();
+        for (i, id) in ids.iter().enumerate() {
+            if let Some(p) = self.players.get_mut(id) {
+                p.pos = spawn_pos(i as PlayerId, w, h);
+                p.bomb_range = bomb_range_for_width(w);
+                p.last_moved_tick = 0;
+            }
+        }
+
+        self.phase = GamePhase::Running;
+        info!("All {} players ready — game starting on {}x{} map!", self.players.len(), w, h);
     }
 }
 
+
+// Bomb range scales gently with map width so big maps don't feel sparse.
+fn bomb_range_for_width(w: u16) -> u8 {
+    ((w / 15) + 1).min(8) as u8
+}
+
+// Picks map dimensions from the number of players in the match. A 2-player game
+// is fairly small and tight; each extra player adds ~2 tiles per axis, topping
+// out a bit above the classic 25x21 layout for a full 8-player lobby. The result
+// is capped to the host's terminal-derived maximum, floored to a playable
+// minimum, and forced odd so the hard-wall pillar pattern lines up.
+fn map_size_for_players(num_players: usize, max_w: u16, max_h: u16) -> (u16, u16) {
+    let n = (num_players.clamp(2, 8)) as u16;
+
+    let mut w = (11 + 2 * n).min(max_w).max(15); // 2p -> 15 ... 8p -> 27
+    let mut h = (9 + 2 * n).min(max_h).max(13);  // 2p -> 13 ... 8p -> 25
+
+    if w % 2 == 0 { w -= 1; }
+    if h % 2 == 0 { h -= 1; }
+    (w, h)
+}
 
 fn spawn_pos(id: PlayerId, w: u16, h: u16) -> (u16, u16) {
     match id % 8 {
@@ -363,26 +414,20 @@ async fn game_loop(
             if let GamePhase::GameOver { .. } = s.phase {
                 if s.tick % 100 == 0 && s.tick > 0 {
                     info!("Resetting for rematch");
-                    s.map = Map::generate(s.map_width, s.map_height);
+                    // Back to the lobby — the map is regenerated and resized to the
+                    // player count by start_match() once everyone readies up again.
                     s.bombs.clear();
                     s.powerups.clear();
                     s.explosions.clear();
                     s.tick = 0;
                     s.ready_players.clear();
                     s.death_order.clear();
-                    let w = s.map_width;
-                    let h = s.map_height;
-                    let ids: Vec<PlayerId> = s.players.keys().copied().collect();
-                    for (i, id) in ids.iter().enumerate() {
-                        if let Some(p) = s.players.get_mut(id) {
-                            p.alive = true;
-                            p.pos = spawn_pos(i as PlayerId, w, h);
-                            p.bombs_placed = 0;
-                            p.last_moved_tick = 0;
-                            p.bomb_range = ((w / 15) + 1).min(8) as u8; 
-                            p.max_bombs = 1;
-                            p.speed = 1;  
-                        }
+                    for p in s.players.values_mut() {
+                        p.alive = true;
+                        p.bombs_placed = 0;
+                        p.last_moved_tick = 0;
+                        p.max_bombs = 1;
+                        p.speed = 1;
                     }
                     s.phase = GamePhase::Lobby;
                 }
@@ -526,4 +571,48 @@ fn local_ip() -> String {
     })
     .map(|addr| addr.ip().to_string())
     .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+#[cfg(test)]
+mod tests {
+    use super::{map_size_for_players, spawn_pos};
+    use common::map::Map;
+
+    #[test]
+    fn map_grows_with_player_count() {
+        // With a generous cap, more players -> a bigger map, never shrinking.
+        let (mut pw, mut ph) = (0u16, 0u16);
+        for n in 2..=8 {
+            let (w, h) = map_size_for_players(n, 999, 999);
+            assert!(w >= pw && h >= ph, "{n} players shrank the map");
+            assert!(w % 2 == 1 && h % 2 == 1, "dimensions must be odd: {w}x{h}");
+            pw = w;
+            ph = h;
+        }
+        // Two players is small; a full lobby is a bit above the classic size.
+        assert_eq!(map_size_for_players(2, 999, 999), (15, 13));
+        assert_eq!(map_size_for_players(8, 999, 999), (27, 25));
+    }
+
+    #[test]
+    fn map_size_respects_terminal_cap_and_minimum() {
+        // Never larger than the host's terminal-derived cap...
+        let (w, h) = map_size_for_players(8, 19, 17);
+        assert!(w <= 19 && h <= 17);
+        assert!(w % 2 == 1 && h % 2 == 1);
+        // ...but never below the playable floor, and the count clamps at 2 and 8.
+        let (w, h) = map_size_for_players(1, 999, 999);
+        assert!(w >= 13 && h >= 11);
+        assert_eq!(map_size_for_players(99, 999, 999), map_size_for_players(8, 999, 999));
+    }
+
+    #[test]
+    fn spawns_are_walkable_on_the_smallest_map() {
+        // The 2-player map must still leave every spawn it uses walkable.
+        let (w, h) = map_size_for_players(2, 999, 999);
+        let map = Map::generate(w, h);
+        for id in 0..2 {
+            let (sx, sy) = spawn_pos(id, w, h);
+            assert!(map.is_walkable(sx, sy), "spawn {id} blocked on {w}x{h} map");
+        }
+    }
 }

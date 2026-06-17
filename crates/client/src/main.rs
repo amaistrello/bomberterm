@@ -242,13 +242,15 @@ async fn run_game_session(
     if matches!(mode, NameMode::Host) {
         info!("Starting embedded server...");
     
-        // Read terminal size right now — the TUI is already running so this is accurate
+        // Read terminal size right now — the TUI is already running so this is accurate.
+        // This becomes the *maximum* map size: the server sizes the actual map to the
+        // number of players who join, but never larger than what fits this terminal.
         let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    
+
         // Map panel width = total cols minus sidebar (26) minus borders (2)
         // Each tile renders as 2 chars wide so divide by 2
         let map_width = (term_cols.saturating_sub(28)) / 2;
-    
+
         // Map height = total rows minus help bar (3) minus borders (2)
         let map_height = term_rows.saturating_sub(5);
     

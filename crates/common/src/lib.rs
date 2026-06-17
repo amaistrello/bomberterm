@@ -28,6 +28,7 @@ mod tests {
             phase: super::protocol::GamePhase::Running,
             ready_players: vec![0, 1],
             powerups: vec![],
+            death_order: vec![],
         };
 
         // Serialize to bytes
